@@ -1,0 +1,118 @@
+{% extends "amos/base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block topbar_title %}Dashboard{% endblock %}
+
+{% block content %}
+<style>
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+  }
+  .stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.35rem; }
+  .stat-value { font-size: 1rem; font-weight: 600; color: var(--text); word-break: break-all; }
+  .stat-value.muted { color: var(--text-muted); font-weight: 400; font-size: 0.88rem; }
+
+  .action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .action-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    text-decoration: none;
+    display: block;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .action-card:hover { border-color: var(--accent); background: var(--surface-2); }
+  .action-card-icon { font-size: 1.4rem; margin-bottom: 0.6rem; }
+  .action-card-title { font-size: 0.95rem; font-weight: 600; color: var(--text); margin-bottom: 0.2rem; }
+  .action-card-desc  { font-size: 0.8rem; color: var(--text-muted); }
+
+  .about-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem 2rem;
+  }
+  .about-card h2 { font-size: 0.95rem; font-weight: 600; color: var(--text); margin-bottom: 0.65rem; }
+  .about-card p  { font-size: 0.875rem; color: var(--text-muted); line-height: 1.7; margin-bottom: 0.5rem; }
+  .about-card p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ── Stat row ── -->
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Username</div>
+    <div class="stat-value">{{ user.username }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Email</div>
+    <div class="stat-value {% if not user.email %}muted{% endif %}">
+      {{ user.email|default:"not set" }}
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Member since</div>
+    {# data-utc carries the ISO timestamp; JS converts it to local time #}
+    <div class="stat-value" data-utc="{{ user.date_joined|date:'c' }}">
+      {{ user.date_joined|date:"N j, Y" }}
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Last sign-in</div>
+    {% if user.last_login %}
+      <div class="stat-value" data-utc="{{ user.last_login|date:'c' }}">
+        {{ user.last_login|date:"N j, Y, g:i a" }}
+      </div>
+    {% else %}
+      <div class="stat-value muted">first session</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Quick actions ── -->
+<div class="action-grid">
+  <a href="{% url 'amos:profile' %}" class="action-card">
+    <div class="action-card-icon">◎</div>
+    <div class="action-card-title">Edit Profile</div>
+    <div class="action-card-desc">Update your bio and account info</div>
+  </a>
+  <a href="{% url 'amos:password_change' %}" class="action-card">
+    <div class="action-card-icon">⊕</div>
+    <div class="action-card-title">Change Password</div>
+    <div class="action-card-desc">Rotate your credentials anytime</div>
+  </a>
+</div>
+
+<!-- ── About ── -->
+<div class="about-card">
+  <h2>About this service</h2>
+  <p>
+    The <strong style="color:var(--text)">User Authentication Service (UAS)</strong> is a
+    production-style Django application that covers the complete authentication lifecycle —
+    registration, login, session management, password changes, and secure sign-out.
+  </p>
+  <p>
+    It is built on Django's battle-tested built-in auth system and follows security best
+    practices: CSRF protection on every form, open-redirect guards on login redirects,
+    session hash rotation on password change, and POST-only logout to prevent CSRF-based
+    sign-out attacks.
+  </p>
+  <p>
+    All passwords are hashed with PBKDF2-SHA256 and validated through Django's
+    password-strength pipeline before they are accepted.
+  </p>
+</div>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "amos/base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block topbar_title %}Sign in{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+  <div class="card">
+    <h1 class="card-title">Sign in</h1>
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ next }}">
+
+      {% for field in form %}
+        <div class="form-group">
+          {{ field.label_tag }}
+          {{ field }}
+          {% if field.errors %}
+            <ul class="errorlist">
+              {% for error in field.errors %}<li>{{ error }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endfor %}
+
+      {% if form.non_field_errors %}
+        <ul class="errorlist mt-1">
+          {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+
+      <button type="submit" class="btn btn-primary btn-full mt-2">Sign in</button>
+    </form>
+
+    <hr class="divider">
+    <p class="text-muted">
+      No account yet?
+      <a href="{% url 'amos:register' %}" style="color:var(--accent)">Register here</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

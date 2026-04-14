@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}UAS{% endblock %} — DevSec Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0d1117;
+      --surface:     #161b22;
+      --surface-2:   #1c2128;
+      --border:      #30363d;
+      --text:        #e6edf3;
+      --text-muted:  #8b949e;
+      --accent:      #58a6ff;
+      --accent-dim:  #1f6feb;
+      --success:     #3fb950;
+      --success-bg:  #0d2a12;
+      --danger:      #f85149;
+      --danger-bg:   #2d1114;
+      --warning:     #d29922;
+      --warning-bg:  #271f00;
+      --info-bg:     #0c1f38;
+      --sidebar-w:   230px;
+    }
+
+    html, body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    /* ── App shell ─────────────────────────────── */
+    .app-shell { display: flex; min-height: 100vh; }
+
+    /* ── Sidebar ───────────────────────────────── */
+    .sidebar {
+      width: var(--sidebar-w);
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0; left: 0;
+      height: 100vh;
+      z-index: 200;
+    }
+
+    .sidebar-brand {
+      padding: 1.25rem 1.25rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+    }
+    .brand-sub {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-top: 0.1rem;
+      letter-spacing: 0.02em;
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 0.75rem 0.75rem 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      overflow-y: auto;
+    }
+
+    .nav-section-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 0.75rem 0.5rem 0.3rem;
+    }
+
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: background 0.12s, color 0.12s;
+    }
+    .nav-link:hover { background: var(--surface-2); color: var(--text); }
+    .nav-link.active { background: var(--surface-2); color: var(--text); font-weight: 500; }
+    .nav-link .nav-icon { font-size: 1rem; opacity: 0.75; width: 18px; text-align: center; }
+
+    .sidebar-footer {
+      padding: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+
+    /* Logout button styled like a nav link */
+    .nav-btn {
+      width: 100%;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.9rem;
+      text-align: left;
+    }
+    .nav-btn.danger { color: var(--danger); }
+    .nav-btn.danger:hover { background: var(--danger-bg); color: var(--danger); }
+
+    /* ── Main area ─────────────────────────────── */
+    .main-area {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    /* ── Top bar ───────────────────────────────── */
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      height: 52px;
+      padding: 0 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .topbar-title {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    /* ── Avatar ────────────────────────────────── */
+    .avatar-wrap { position: relative; }
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      user-select: none;
+      border: 2px solid transparent;
+      transition: border-color 0.15s;
+    }
+    .avatar-wrap:hover .avatar { border-color: var(--accent); }
+
+    .avatar-dropdown {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      min-width: 170px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      overflow: hidden;
+    }
+    .avatar-wrap:hover .avatar-dropdown { display: block; }
+
+    .avatar-dropdown-header {
+      padding: 0.65rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.82rem;
+    }
+    .avatar-dropdown-header strong { color: var(--text); display: block; }
+    .avatar-dropdown-header span { color: var(--text-muted); }
+
+    .dropdown-link {
+      display: block;
+      padding: 0.5rem 1rem;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: background 0.1s, color 0.1s;
+    }
+    .dropdown-link:hover { background: var(--surface-2); color: var(--text); }
+    .dropdown-divider { border: none; border-top: 1px solid var(--border); }
+
+    .dropdown-form { margin: 0; }
+    .dropdown-btn {
+      width: 100%;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.88rem;
+      text-align: left;
+      display: block;
+      padding: 0.5rem 1rem;
+      color: var(--danger);
+      transition: background 0.1s;
+    }
+    .dropdown-btn:hover { background: var(--danger-bg); }
+
+    /* ── Content area ──────────────────────────── */
+    .content {
+      padding: 1.75rem 2rem 3rem;
+      flex: 1;
+    }
+
+    /* Flash messages */
+    .messages { margin-bottom: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    .alert { padding: 0.65rem 1rem; border-radius: 6px; font-size: 0.88rem; border: 1px solid transparent; }
+    .alert.success { background: var(--success-bg); color: var(--success);  border-color: #1a4d22; }
+    .alert.error   { background: var(--danger-bg);  color: var(--danger);   border-color: #5c1a1a; }
+    .alert.info    { background: var(--info-bg);    color: var(--accent);   border-color: #1a3a5c; }
+    .alert.warning { background: var(--warning-bg); color: var(--warning);  border-color: #4a3800; }
+
+    /* ── Cards ─────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.75rem 2rem;
+    }
+    .card-title {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* Auth pages — centered single card */
+    .auth-wrapper {
+      display: flex;
+      justify-content: center;
+      padding-top: 1.5rem;
+    }
+    .auth-wrapper .card { width: 100%; max-width: 440px; }
+
+    /* ── Forms ─────────────────────────────────── */
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; font-size: 0.85rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.3rem; }
+
+    .form-group input[type="text"],
+    .form-group input[type="email"],
+    .form-group input[type="password"],
+    .form-group textarea {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.92rem;
+      font-family: inherit;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .form-group input:focus, .form-group textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(88,166,255,0.12);
+    }
+    .form-group textarea { resize: vertical; min-height: 90px; }
+
+    .errorlist { list-style: none; margin-top: 0.3rem; font-size: 0.8rem; color: var(--danger); }
+    .helptext  { display: block; margin-top: 0.22rem; font-size: 0.78rem; color: var(--text-muted); }
+
+    /* ── Buttons ───────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 1.25rem;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      border: 1px solid transparent;
+      transition: background 0.13s, border-color 0.13s;
+    }
+    .btn-primary  { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover  { background: #388bfd; border-color: #388bfd; }
+    .btn-secondary { background: var(--surface-2); border-color: var(--border); color: var(--text-muted); }
+    .btn-secondary:hover { color: var(--text); border-color: var(--text-muted); }
+    .btn-danger  { background: #2d1114; border-color: var(--danger); color: var(--danger); }
+    .btn-danger:hover  { background: var(--danger); color: var(--bg); }
+    .btn-full { width: 100%; justify-content: center; }
+
+    /* ── Utilities ─────────────────────────────── */
+    .text-muted { color: var(--text-muted); font-size: 0.875rem; }
+    .mt-1 { margin-top: 0.5rem; }
+    .mt-2 { margin-top: 1rem; }
+    .mt-3 { margin-top: 1.5rem; }
+    .mt-4 { margin-top: 2rem; }
+    .divider { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+    .action-row { display: flex; gap: 0.65rem; flex-wrap: wrap; margin-top: 1.25rem; }
+    .info-grid  { display: grid; gap: 0; }
+    .info-row   { display: flex; gap: 1rem; padding: 0.55rem 0; border-bottom: 1px solid var(--border); }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: var(--text-muted); font-size: 0.85rem; min-width: 110px; }
+    .info-value { color: var(--text); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- ════════ Sidebar ════════ -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-name">UAS</div>
+      <div class="brand-sub">User Auth Service</div>
+    </div>
+
+    <nav class="sidebar-nav">
+      {% if user.is_authenticated %}
+        <span class="nav-section-label">Main</span>
+        <a href="{% url 'amos:dashboard' %}"
+           class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+          <span class="nav-icon">⊟</span> Dashboard
+        </a>
+        <a href="{% url 'amos:profile' %}"
+           class="nav-link {% if request.resolver_match.url_name == 'profile' %}active{% endif %}">
+          <span class="nav-icon">◎</span> Profile
+        </a>
+        <span class="nav-section-label">Security</span>
+        <a href="{% url 'amos:password_change' %}"
+           class="nav-link {% if request.resolver_match.url_name == 'password_change' %}active{% endif %}">
+          <span class="nav-icon">⊕</span> Change Password
+        </a>
+      {% else %}
+        <span class="nav-section-label">Account</span>
+        <a href="{% url 'amos:login' %}"
+           class="nav-link {% if request.resolver_match.url_name == 'login' %}active{% endif %}">
+          <span class="nav-icon">→</span> Sign in
+        </a>
+        <a href="{% url 'amos:register' %}"
+           class="nav-link {% if request.resolver_match.url_name == 'register' %}active{% endif %}">
+          <span class="nav-icon">+</span> Register
+        </a>
+      {% endif %}
+    </nav>
+
+    {% if user.is_authenticated %}
+    <div class="sidebar-footer">
+      <form method="post" action="{% url 'amos:logout' %}" style="margin:0">
+        {% csrf_token %}
+        <button type="submit" class="nav-link nav-btn danger">
+          <span class="nav-icon">↩</span> Sign out
+        </button>
+      </form>
+    </div>
+    {% endif %}
+  </aside>
+
+  <!-- ════════ Main area ════════ -->
+  <div class="main-area">
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <span class="topbar-title">{% block topbar_title %}{% endblock %}</span>
+
+      {% if user.is_authenticated %}
+      <div class="avatar-wrap">
+        <div class="avatar" id="user-avatar">{{ user.username|slice:":2"|upper }}</div>
+        <div class="avatar-dropdown">
+          <div class="avatar-dropdown-header">
+            <strong>{{ user.username }}</strong>
+            <span>{{ user.email|default:"no email" }}</span>
+          </div>
+          <a href="{% url 'amos:profile' %}" class="dropdown-link">Edit profile</a>
+          <a href="{% url 'amos:password_change' %}" class="dropdown-link">Change password</a>
+          <hr class="dropdown-divider">
+          <form method="post" action="{% url 'amos:logout' %}" class="dropdown-form">
+            {% csrf_token %}
+            <button type="submit" class="dropdown-btn">Sign out</button>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+    </header>
+
+    <!-- Content -->
+    <main class="content">
+      {% if messages %}
+      <div class="messages">
+        {% for message in messages %}
+          <div class="alert {{ message.tags }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+
+  </div>
+</div>
+
+<script>
+  // ── Avatar colour ────────────────────────────────────────────────────────
+  // Deterministic colour from username so each user gets a unique shade.
+  (function () {
+    var el = document.getElementById('user-avatar');
+    if (!el) return;
+    var palette = ['#1f6feb','#238636','#7c3aed','#b45309','#c0392b','#0e7490'];
+    var text = el.textContent.trim();
+    var hash = 0;
+    for (var i = 0; i < text.length; i++) {
+      hash = text.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    el.style.background = palette[Math.abs(hash) % palette.length];
+  })();
+
+  // ── Local time display ───────────────────────────────────────────────────
+  // Datetime values are stored and sent as UTC (ISO 8601).
+  // We replace them client-side with the browser's local timezone.
+  document.querySelectorAll('[data-utc]').forEach(function (el) {
+    try {
+      var d = new Date(el.getAttribute('data-utc'));
+      if (!isNaN(d.getTime())) {
+        el.textContent = d.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit'
+        });
+      }
+    } catch (e) { /* keep server-rendered fallback */ }
+  });
+</script>
+</body>
+</html>

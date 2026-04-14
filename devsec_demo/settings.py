@@ -41,6 +41,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # --- Project apps ---
+    'amos',  # User Authentication Service — Amos
 ]
 
 MIDDLEWARE = [
@@ -119,3 +121,37 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# ---------------------------------------------------------------------------
+# Authentication routing
+# Docs: https://docs.djangoproject.com/en/5.2/ref/settings/#login-url
+# ---------------------------------------------------------------------------
+
+# Where @login_required sends unauthenticated users.
+LOGIN_URL = '/amos/login/'
+
+# Where the login view redirects to if no ?next= is present.
+LOGIN_REDIRECT_URL = '/amos/dashboard/'
+
+# Where the logout view redirects to after signing out.
+LOGOUT_REDIRECT_URL = '/amos/login/'
+
+# ---------------------------------------------------------------------------
+# Session security
+# Docs: https://docs.djangoproject.com/en/5.2/topics/http/sessions/#session-security
+# ---------------------------------------------------------------------------
+
+# Prevent JavaScript from reading the session cookie (mitigates XSS theft).
+# This is already Django's default; we make it explicit for clarity.
+SESSION_COOKIE_HTTPONLY = True
+
+# Sessions expire after 1 hour of inactivity (3600 seconds).
+# Django's default is 2 weeks — far too long for an auth service.
+SESSION_COOKIE_AGE = 3600
+
+# ---------------------------------------------------------------------------
+# Default primary key type
+# Docs: https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+# ---------------------------------------------------------------------------
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
