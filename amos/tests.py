@@ -9,7 +9,7 @@ ideal for testing full authentication flows end-to-end without a browser.
 Docs: https://docs.djangoproject.com/en/5.2/topics/testing/tools/#the-test-client
 """
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.test import TestCase
 from django.urls import reverse
 
@@ -459,3 +459,106 @@ class ProfileViewTests(TestCase):
         self.assertTrue(hasattr(self.user, "profile"))
         # The admin-created user also gets a profile via signal.
         self.assertTrue(hasattr(admin_user, "profile"))
+
+
+# ---------------------------------------------------------------------------
+# Role-based access control
+# ---------------------------------------------------------------------------
+
+class RBACTests(TestCase):
+    """Authorization across the three tiers: anonymous, authenticated user, instructor.
+
+    Each tier's allowed and denied paths are both covered so regressions in
+    either direction (granting too much or too little) are caught.
+
+    Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#groups
+    Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#permissions-and-authorization
+    """
+
+    def setUp(self):
+        self.group, _ = Group.objects.get_or_create(name="instructor")
+        self.user = make_user("student")
+        self.instructor = make_user("prof")
+        self.instructor.groups.add(self.group)
+
+    # ── Tier 1: Anonymous ──────────────────────────────────────────────────
+
+    def test_anonymous_redirected_from_roster(self):
+        """login_required fires before the group check — anonymous gets a login redirect."""
+        response = self.client.get(reverse("amos:roster"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response.url)
+
+    def test_anonymous_redirected_from_dashboard(self):
+        response = self.client.get(reverse("amos:dashboard"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response.url)
+
+    # ── Tier 2: Authenticated regular user ────────────────────────────────
+
+    def test_regular_user_denied_roster(self):
+        """Authenticated users outside the instructor group receive 403 Forbidden."""
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("amos:roster"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_regular_user_can_access_dashboard(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(reverse("amos:dashboard")).status_code, 200)
+
+    def test_regular_user_can_access_profile(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(reverse("amos:profile")).status_code, 200)
+
+    def test_regular_user_can_change_password(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(reverse("amos:password_change")).status_code, 200)
+
+    def test_roster_link_hidden_from_regular_user(self):
+        """The sidebar must not expose the roster URL to non-instructors."""
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("amos:dashboard"))
+        self.assertNotContains(response, reverse("amos:roster"))
+
+    # ── Tier 3: Instructor ─────────────────────────────────────────────────
+
+    def test_instructor_can_access_roster(self):
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.get(reverse("amos:roster")).status_code, 200)
+
+    def test_instructor_can_access_dashboard(self):
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.get(reverse("amos:dashboard")).status_code, 200)
+
+    def test_roster_lists_all_users(self):
+        """The roster must include every registered account."""
+        self.client.force_login(self.instructor)
+        response = self.client.get(reverse("amos:roster"))
+        self.assertContains(response, "student")
+        self.assertContains(response, "prof")
+
+    def test_roster_link_visible_to_instructor(self):
+        """Instructors must see the roster link in the sidebar."""
+        self.client.force_login(self.instructor)
+        response = self.client.get(reverse("amos:dashboard"))
+        self.assertContains(response, reverse("amos:roster"))
+
+    def test_roster_shows_instructor_badge(self):
+        """The roster must display an 'Instructor' badge for instructor accounts."""
+        self.client.force_login(self.instructor)
+        response = self.client.get(reverse("amos:roster"))
+        self.assertContains(response, "Instructor")
+
+    def test_promoting_user_grants_roster_access(self):
+        """Adding a user to the instructor group must immediately unlock the roster."""
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(reverse("amos:roster")).status_code, 403)
+        self.user.groups.add(self.group)
+        self.assertEqual(self.client.get(reverse("amos:roster")).status_code, 200)
+
+    def test_demoting_instructor_revokes_roster_access(self):
+        """Removing a user from the instructor group must immediately block the roster."""
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.get(reverse("amos:roster")).status_code, 200)
+        self.instructor.groups.remove(self.group)
+        self.assertEqual(self.client.get(reverse("amos:roster")).status_code, 403)

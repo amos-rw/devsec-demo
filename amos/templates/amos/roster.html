@@ -1,0 +1,126 @@
+{% extends "amos/base.html" %}
+{% load role_tags %}
+{% block title %}Member Roster{% endblock %}
+{% block topbar_title %}Instructor — Member Roster{% endblock %}
+
+{% block content %}
+<style>
+  .roster-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .roster-header {
+    padding: 1.25rem 1.75rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .roster-header h1 { font-size: 1.1rem; font-weight: 600; color: var(--text); }
+  .roster-count { font-size: 0.82rem; color: var(--text-muted); }
+
+  .roster-table { width: 100%; border-collapse: collapse; }
+  .roster-table th {
+    text-align: left;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    padding: 0.65rem 1.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .roster-table td {
+    padding: 0.75rem 1.75rem;
+    font-size: 0.875rem;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .roster-table tr:last-child td { border-bottom: none; }
+  .roster-table tr:hover td { background: var(--surface-2); }
+
+  .user-cell { display: flex; align-items: center; gap: 0.65rem; }
+  .user-initials {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .you-chip {
+    font-size: 0.68rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 20px;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    margin-left: 0.3rem;
+  }
+
+  .role-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.15rem 0.55rem;
+    border-radius: 20px;
+  }
+  .role-badge.instructor { background: var(--accent-dim); color: #fff; }
+  .role-badge.user { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+</style>
+
+<div class="roster-card">
+  <div class="roster-header">
+    <h1>Member Roster</h1>
+    <span class="roster-count">{{ users.count }} account{{ users.count|pluralize }}</span>
+  </div>
+
+  <table class="roster-table">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Email</th>
+        <th>Joined</th>
+        <th>Last sign-in</th>
+        <th>Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>
+          <div class="user-cell">
+            <span class="user-initials">{{ u.username|slice:":2"|upper }}</span>
+            {{ u.username }}
+            {% if u == request.user %}<span class="you-chip">you</span>{% endif %}
+          </div>
+        </td>
+        <td>{{ u.email|default:"—" }}</td>
+        <td data-utc="{{ u.date_joined|date:'c' }}">{{ u.date_joined|date:"N j, Y" }}</td>
+        <td>
+          {% if u.last_login %}
+            <span data-utc="{{ u.last_login|date:'c' }}">{{ u.last_login|date:"N j, Y" }}</span>
+          {% else %}
+            <span class="text-muted">never</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if u|has_role:"instructor" %}
+            <span class="role-badge instructor">Instructor</span>
+          {% else %}
+            <span class="role-badge user">User</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

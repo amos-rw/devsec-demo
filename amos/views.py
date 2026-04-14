@@ -7,10 +7,12 @@ from django.contrib import messages
 from django.contrib.auth import login, logout, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
+from django.contrib.auth.models import User
 from django.http import HttpResponseRedirect
 from django.shortcuts import redirect, render
 from django.utils.http import url_has_allowed_host_and_scheme
 
+from .decorators import instructor_required
 from .forms import LoginForm, ProfileUpdateForm, RegistrationForm
 from .models import Profile
 
@@ -104,6 +106,14 @@ def password_change(request):
         form = PasswordChangeForm(user=request.user)
 
     return render(request, "amos/password_change.html", {"form": form})
+
+
+@instructor_required
+def roster(request):
+    # select_related prefetches the profile in the same query to avoid N+1 hits.
+    # Docs: https://docs.djangoproject.com/en/5.2/ref/models/querysets/#select-related
+    users = User.objects.select_related("profile").order_by("date_joined")
+    return render(request, "amos/roster.html", {"users": users})
 
 
 @login_required

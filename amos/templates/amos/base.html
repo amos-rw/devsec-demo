@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+{% load role_tags %}<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -203,6 +203,19 @@
     .dropdown-link:hover { background: var(--surface-2); color: var(--text); }
     .dropdown-divider { border: none; border-top: 1px solid var(--border); }
 
+    .role-chip {
+      display: inline-block;
+      margin-top: 0.3rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.1rem 0.5rem;
+      border-radius: 20px;
+      background: var(--accent-dim);
+      color: #fff;
+      letter-spacing: 0.04em;
+    }
+    .role-chip.user { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+
     .dropdown-form { margin: 0; }
     .dropdown-btn {
       width: 100%;
@@ -348,6 +361,13 @@
            class="nav-link {% if request.resolver_match.url_name == 'password_change' %}active{% endif %}">
           <span class="nav-icon">⊕</span> Change Password
         </a>
+        {% if user|has_role:"instructor" %}
+        <span class="nav-section-label">Instructor</span>
+        <a href="{% url 'amos:roster' %}"
+           class="nav-link {% if request.resolver_match.url_name == 'roster' %}active{% endif %}">
+          <span class="nav-icon">≡</span> Member Roster
+        </a>
+        {% endif %}
       {% else %}
         <span class="nav-section-label">Account</span>
         <a href="{% url 'amos:login' %}"
@@ -387,6 +407,11 @@
           <div class="avatar-dropdown-header">
             <strong>{{ user.username }}</strong>
             <span>{{ user.email|default:"no email" }}</span>
+            {% if user|has_role:"instructor" %}
+              <span class="role-chip">Instructor</span>
+            {% else %}
+              <span class="role-chip user">User</span>
+            {% endif %}
           </div>
           <a href="{% url 'amos:profile' %}" class="dropdown-link">Edit profile</a>
           <a href="{% url 'amos:password_change' %}" class="dropdown-link">Change password</a>
