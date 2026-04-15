@@ -8,8 +8,9 @@ from django.contrib.auth import login, logout, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import User
+from django.core.exceptions import PermissionDenied
 from django.http import HttpResponseRedirect
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.http import url_has_allowed_host_and_scheme
 
 from .decorators import instructor_required
@@ -126,3 +127,39 @@ def user_logout(request):
         return redirect("amos:login")
 
     return render(request, "amos/logout_confirm.html")
+
+
+@login_required
+def view_profile(request, pk):
+    """Read-only view of a single user's profile, looked up by primary key.
+
+    IDOR risk: this endpoint accepts a predictable integer (the user's pk) in
+    the URL.  Without an explicit ownership check, any authenticated user could
+    read any other user's profile simply by changing that number — a classic
+    Insecure Direct Object Reference (IDOR) attack.
+
+    Fix applied here: before touching the database we verify that the requesting
+    user either *owns* the profile (request.user.pk == pk) or holds the
+    'instructor' role.  Everyone else receives 403 Forbidden.  We raise the
+    error before calling get_object_or_404 so we do not accidentally leak the
+    existence of accounts to unauthorised callers.
+
+    Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#limiting-access-to-logged-in-users
+    Docs: https://owasp.org/www-project-top-ten/2017/A5_2017-Broken_Access_Control
+    """
+    is_instructor = request.user.groups.filter(name="instructor").exists()
+
+    # Object-level access check — explicit, not implicit.
+    # Checking login state alone is not enough; we must also verify ownership.
+    if request.user.pk != pk and not is_instructor:
+        raise PermissionDenied
+
+    target_user = get_object_or_404(User, pk=pk)
+    # get_or_create is a safety net for users who may not have a Profile yet
+    # (e.g. created via management commands or fixtures).
+    profile_obj, _ = Profile.objects.get_or_create(user=target_user)
+
+    return render(request, "amos/view_profile.html", {
+        "profile_user": target_user,
+        "profile_obj": profile_obj,
+    })

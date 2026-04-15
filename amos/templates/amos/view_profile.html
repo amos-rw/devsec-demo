@@ -1,0 +1,51 @@
+{% extends "amos/base.html" %}
+{% load role_tags %}
+{% block title %}{{ profile_user.username }}'s Profile{% endblock %}
+{% block topbar_title %}View Profile{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:600px">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.25rem;">
+    <h1 class="card-title" style="margin-bottom:0">{{ profile_user.username }}'s profile</h1>
+    {% if profile_user == request.user %}
+      <a href="{% url 'amos:profile' %}" class="btn btn-secondary" style="font-size:0.8rem">Edit</a>
+    {% endif %}
+  </div>
+
+  <div class="info-grid">
+    <div class="info-row">
+      <span class="info-label">Username</span>
+      <span class="info-value">{{ profile_user.username }}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Email</span>
+      <span class="info-value">{{ profile_user.email|default:"—" }}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Member since</span>
+      <span class="info-value" data-utc="{{ profile_user.date_joined|date:'c' }}">
+        {{ profile_user.date_joined|date:"N j, Y" }}
+      </span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Role</span>
+      <span class="info-value">
+        {% if profile_user|has_role:"instructor" %}Instructor{% else %}User{% endif %}
+      </span>
+    </div>
+  </div>
+
+  {% if profile_obj.bio %}
+    <hr class="divider">
+    <div>
+      <span class="info-label" style="display:block;margin-bottom:0.4rem">Bio</span>
+      <p style="font-size:0.9rem;color:var(--text);line-height:1.6;margin:0">{{ profile_obj.bio }}</p>
+    </div>
+  {% endif %}
+
+  <div class="action-row" style="margin-top:1.5rem">
+    <a href="javascript:history.back()" class="btn btn-secondary">Back</a>
+  </div>
+</div>
+{% endblock %}

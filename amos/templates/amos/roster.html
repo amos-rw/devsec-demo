@@ -98,7 +98,9 @@
         <td>
           <div class="user-cell">
             <span class="user-initials">{{ u.username|slice:":2"|upper }}</span>
-            {{ u.username }}
+            <a href="{% url 'amos:view_profile' pk=u.pk %}" style="color:var(--text);text-decoration:none;">
+              {{ u.username }}
+            </a>
             {% if u == request.user %}<span class="you-chip">you</span>{% endif %}
           </div>
         </td>
