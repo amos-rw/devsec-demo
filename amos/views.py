@@ -16,8 +16,13 @@ from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.contrib.auth.views import (
+    PasswordResetConfirmView,
+    PasswordResetView as DjangoPasswordResetView,
+)
 from django.views.decorators.http import require_POST
 
+from . import audit
 from .decorators import instructor_required
 from .forms import LoginForm, ProfileUpdateForm, RegistrationForm
 from .models import LoginAttempt, Profile
@@ -41,6 +46,7 @@ def register(request):
         if form.is_valid():
             user = form.save()
             login(request, user)
+            audit.registration_succeeded(request, user.username)
             messages.success(request, f"Welcome, {user.username}! Your account is ready.")
             return redirect("amos:dashboard")
     else:
@@ -96,6 +102,7 @@ def user_login(request):
         # locked account cannot be used to probe passwords at all.
         if attempt.locked_until and attempt.locked_until > now:
             remaining = max(1, round((attempt.locked_until - now).total_seconds() / 60))
+            audit.login_locked(request, attempt_key)
             messages.error(
                 request,
                 f"Too many failed attempts. Please wait {remaining} minute(s) before trying again.",
@@ -120,6 +127,7 @@ def user_login(request):
         if form.is_valid():
             user = form.get_user()
             login(request, user)
+            audit.login_succeeded(request, user.username)
 
             # Clear the attempt record — clean slate for next session.
             attempt.delete()
@@ -144,6 +152,7 @@ def user_login(request):
         if attempt.failed_count >= _MAX_ATTEMPTS:
             attempt.locked_until = now + _LOCKOUT_DURATION
         attempt.save()
+        audit.login_failed(request, attempt_key)
 
     else:
         form = LoginForm()
@@ -187,6 +196,7 @@ def password_change(request):
             # the password hash rotates, so the user is not signed out here.
             # Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#django.contrib.auth.update_session_auth_hash
             update_session_auth_hash(request, user)
+            audit.password_changed(request, request.user.username)
             messages.success(request, "Your password has been changed successfully.")
             return redirect("amos:dashboard")
     else:
@@ -208,6 +218,7 @@ def user_logout(request):
     # POST-only logout prevents a CSRF-style attack where an attacker embeds
     # the logout URL in an <img> tag and silently signs the victim out.
     if request.method == "POST":
+        audit.logout_succeeded(request, request.user.username)
         logout(request)
         messages.info(request, "You have been signed out. See you next time!")
         return redirect("amos:login")
@@ -291,3 +302,33 @@ def update_bio(request):
     profile.save()
 
     return JsonResponse({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# Audited password-reset views
+# Thin subclasses of Django's built-in reset views that emit audit events
+# without duplicating any of the token-generation or validation logic.
+# ---------------------------------------------------------------------------
+
+class AuditedPasswordResetView(DjangoPasswordResetView):
+    """Emit an audit log entry when a password-reset email is requested.
+
+    The email address is logged unconditionally for abuse detection,
+    regardless of whether it is registered.  The HTTP response is the same
+    in both cases, preserving anti-enumeration behaviour.
+    """
+
+    def form_valid(self, form):
+        email = form.cleaned_data["email"]
+        response = super().form_valid(form)
+        audit.password_reset_requested(self.request, email)
+        return response
+
+
+class AuditedPasswordResetConfirmView(PasswordResetConfirmView):
+    """Emit an audit log entry when a password-reset is successfully completed."""
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        audit.password_reset_completed(self.request, form.user.username)
+        return response

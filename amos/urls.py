@@ -28,7 +28,7 @@ urlpatterns = [
     # Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#django.contrib.auth.views.PasswordResetView
     path(
         "password-reset/",
-        auth_views.PasswordResetView.as_view(
+        views.AuditedPasswordResetView.as_view(
             template_name="amos/password_reset_request.html",
             email_template_name="amos/email/password_reset_email.txt",
             subject_template_name="amos/email/password_reset_subject.txt",
@@ -48,7 +48,7 @@ urlpatterns = [
     # prevent the token from appearing in the Referer header on the next page.
     path(
         "password-reset/<uidb64>/<token>/",
-        auth_views.PasswordResetConfirmView.as_view(
+        views.AuditedPasswordResetConfirmView.as_view(
             template_name="amos/password_reset_confirm.html",
             success_url=reverse_lazy("amos:password_reset_complete"),
         ),

@@ -176,3 +176,34 @@ DEFAULT_FROM_EMAIL = 'UAS <noreply@uas.local>'
 # Reset links expire after 1 hour (3 600 s).
 # Django's default is 3 days — far too long for a short-lived recovery link.
 PASSWORD_RESET_TIMEOUT = 3600
+
+# ---------------------------------------------------------------------------
+# Audit logging
+# Docs: https://docs.djangoproject.com/en/5.2/topics/logging/
+# ---------------------------------------------------------------------------
+# The "amos.audit" logger captures security-relevant auth events (login,
+# logout, registration, password changes).  In production swap the console
+# handler for a file handler or ship to a centralised logging service.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "audit": {
+            "format": "%(asctime)s %(levelname)-8s %(name)s %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%SZ",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "audit",
+        },
+    },
+    "loggers": {
+        "amos.audit": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
