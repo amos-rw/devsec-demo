@@ -10,7 +10,8 @@ Namespacing prevents collisions if other apps define views with the same names.
 Docs: https://docs.djangoproject.com/en/5.2/topics/http/urls/#url-namespaces
 """
 
-from django.urls import path
+from django.contrib.auth import views as auth_views
+from django.urls import path, reverse_lazy
 
 from . import views
 
@@ -21,6 +22,46 @@ urlpatterns = [
     path("register/", views.register, name="register"),
     path("login/", views.user_login, name="login"),
 
+    # --- Password reset (public — user is locked out and cannot authenticate) ---
+    # Django's built-in views handle token generation, validation, and expiry.
+    # We only supply templates and the success redirect URLs.
+    # Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#django.contrib.auth.views.PasswordResetView
+    path(
+        "password-reset/",
+        auth_views.PasswordResetView.as_view(
+            template_name="amos/password_reset_request.html",
+            email_template_name="amos/email/password_reset_email.txt",
+            subject_template_name="amos/email/password_reset_subject.txt",
+            success_url=reverse_lazy("amos:password_reset_done"),
+        ),
+        name="password_reset",
+    ),
+    path(
+        "password-reset/done/",
+        auth_views.PasswordResetDoneView.as_view(
+            template_name="amos/password_reset_done.html",
+        ),
+        name="password_reset_done",
+    ),
+    # <uidb64>/<token>/ — Django validates the token here; a valid token is
+    # stored in the session and the URL is rewritten to .../set-password/ to
+    # prevent the token from appearing in the Referer header on the next page.
+    path(
+        "password-reset/<uidb64>/<token>/",
+        auth_views.PasswordResetConfirmView.as_view(
+            template_name="amos/password_reset_confirm.html",
+            success_url=reverse_lazy("amos:password_reset_complete"),
+        ),
+        name="password_reset_confirm",
+    ),
+    path(
+        "password-reset/complete/",
+        auth_views.PasswordResetCompleteView.as_view(
+            template_name="amos/password_reset_complete.html",
+        ),
+        name="password_reset_complete",
+    ),
+
     # --- Authenticated users ---
     path("dashboard/", views.dashboard, name="dashboard"),
     path("profile/", views.profile, name="profile"),
@@ -28,8 +69,6 @@ urlpatterns = [
     path("logout/", views.user_logout, name="logout"),
 
     # --- Profile detail (object-level access control enforced in the view) ---
-    # The pk in the URL is a predictable integer — the view must verify that
-    # the requesting user owns this profile or holds the instructor role.
     path("profile/<int:pk>/", views.view_profile, name="view_profile"),
 
     # --- Instructor only ---

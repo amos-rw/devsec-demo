@@ -155,3 +155,24 @@ SESSION_COOKIE_AGE = 3600
 # ---------------------------------------------------------------------------
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------------------------------------------------------
+# Email
+# Docs: https://docs.djangoproject.com/en/5.2/topics/email/
+# ---------------------------------------------------------------------------
+
+# In development the console backend prints outgoing emails to stdout so the
+# reset link is visible without needing an SMTP server.
+# Swap for an SMTP or third-party backend in production.
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+DEFAULT_FROM_EMAIL = 'UAS <noreply@uas.local>'
+
+# ---------------------------------------------------------------------------
+# Password reset token lifetime
+# Docs: https://docs.djangoproject.com/en/5.2/ref/settings/#password-reset-timeout
+# ---------------------------------------------------------------------------
+
+# Reset links expire after 1 hour (3 600 s).
+# Django's default is 3 days — far too long for a short-lived recovery link.
+PASSWORD_RESET_TIMEOUT = 3600
