@@ -3,6 +3,8 @@ amos/views.py — authentication lifecycle views.
 Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/
 """
 
+from datetime import timedelta
+
 from django.contrib import messages
 from django.contrib.auth import login, logout, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
@@ -11,11 +13,21 @@ from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
 from .decorators import instructor_required
 from .forms import LoginForm, ProfileUpdateForm, RegistrationForm
-from .models import Profile
+from .models import LoginAttempt, Profile
+
+# ---------------------------------------------------------------------------
+# Brute-force protection settings
+# After MAX_ATTEMPTS consecutive failures the account is locked for
+# LOCKOUT_DURATION.  The counter resets on a successful login or once the
+# lockout window has fully expired.
+# ---------------------------------------------------------------------------
+_MAX_ATTEMPTS = 5
+_LOCKOUT_DURATION = timedelta(minutes=15)
 
 
 def register(request):
@@ -40,15 +52,49 @@ def user_login(request):
         return redirect("amos:dashboard")
 
     if request.method == "POST":
+        # Normalise username for consistent tracking regardless of case.
+        raw_username = request.POST.get("username", "").strip()
+        attempt_key  = raw_username.lower()
+
+        attempt, _ = LoginAttempt.objects.get_or_create(username=attempt_key)
+        now = timezone.now()
+
+        # ── Guard: reject immediately if still within lockout window ──────
+        # We check this BEFORE running the (expensive) credential check so a
+        # locked account cannot be used to probe passwords at all.
+        if attempt.locked_until and attempt.locked_until > now:
+            remaining = max(1, round((attempt.locked_until - now).total_seconds() / 60))
+            messages.error(
+                request,
+                f"Too many failed attempts. Please wait {remaining} minute(s) before trying again.",
+            )
+            return render(request, "amos/login.html", {
+                # Return a blank form — no point showing credential errors
+                # when the account is locked regardless.
+                "form": LoginForm(),
+                "next": request.POST.get("next", ""),
+            })
+
+        # ── Reset counter once lockout window has fully elapsed ───────────
+        # This gives the user a clean slate for the next window rather than
+        # requiring admin intervention to unlock.
+        if attempt.locked_until and attempt.locked_until <= now:
+            attempt.failed_count = 0
+            attempt.locked_until = None
+            attempt.save()
+
+        # ── Normal authentication ─────────────────────────────────────────
         form = LoginForm(request, data=request.POST)
         if form.is_valid():
             user = form.get_user()
             login(request, user)
+
+            # Clear the attempt record — clean slate for next session.
+            attempt.delete()
+
             messages.success(request, f"Welcome back, {user.username}!")
 
             # Open-redirect guard: validate ?next= before following it.
-            # Without this check an attacker could craft a link that sends
-            # the victim to an external site after a successful login.
             # Docs: https://docs.djangoproject.com/en/5.2/ref/utils/#django.utils.http.url_has_allowed_host_and_scheme
             next_url = request.POST.get("next") or request.GET.get("next", "")
             if next_url and url_has_allowed_host_and_scheme(
@@ -59,6 +105,14 @@ def user_login(request):
                 return HttpResponseRedirect(next_url)
 
             return redirect("amos:dashboard")
+
+        # ── Record failure ────────────────────────────────────────────────
+        attempt.failed_count += 1
+        attempt.last_failed_at = now
+        if attempt.failed_count >= _MAX_ATTEMPTS:
+            attempt.locked_until = now + _LOCKOUT_DURATION
+        attempt.save()
+
     else:
         form = LoginForm()
 

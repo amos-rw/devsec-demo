@@ -1,187 +1,207 @@
 """
-amos/tests.py  —  Secure password reset workflow tests.
+amos/tests.py  —  Brute-force login protection tests.
 
-Assignment: secure-password-reset
-Security topic: Token-based account recovery and user enumeration prevention.
+Assignment: harden-login-bruteforce
+Security topic: Authentication abuse, attempt tracking, account lockout.
 
-Django's PasswordResetView generates a HMAC-SHA256 token that is:
-  - Tied to the user's current password hash and last_login timestamp
-  - Single-use: the token is invalidated as soon as the password changes
-  - Time-limited: expires after PASSWORD_RESET_TIMEOUT seconds (1 hour here)
+Design under test:
+  - After _MAX_ATTEMPTS (5) consecutive failures the account is locked for
+    _LOCKOUT_DURATION (15 minutes).
+  - The lockout is account-based (keyed on normalised username).
+  - A successful login clears the attempt record entirely.
+  - Once the lockout window expires the counter resets for a fresh window.
 
-These tests verify the full reset flow and the security properties of each step.
-
-Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/#django.contrib.auth.views.PasswordResetView
+Docs: https://docs.djangoproject.com/en/5.2/topics/testing/tools/
 """
 
+from datetime import timedelta
+
 from django.contrib.auth.models import User
-from django.contrib.auth.tokens import default_token_generator
-from django.core import mail
-from django.test import Client, TestCase
+from django.contrib.messages import get_messages
+from django.test import TestCase
 from django.urls import reverse
-from django.utils.encoding import force_bytes
-from django.utils.http import urlsafe_base64_encode
+from django.utils import timezone
+
+from .models import LoginAttempt
 
 
 STRONG_PASSWORD = "Tr0ub4dor&3"
-NEW_PASSWORD    = "Fr3shP@ssw0rd!"
 
 
-def make_user(username, password=STRONG_PASSWORD, email=""):
-    return User.objects.create_user(username=username, password=password, email=email)
+def make_user(username, password=STRONG_PASSWORD):
+    return User.objects.create_user(username=username, password=password)
 
 
-class PasswordResetFlowTests(TestCase):
+class BruteForceProtectionTests(TestCase):
     """
-    End-to-end tests for the four-step password reset workflow:
+    Tests for the brute-force login protection layer.
 
-      1. Request  — user submits their email address
-      2. Done     — neutral confirmation page (anti-enumeration)
-      3. Confirm  — user follows the token link and sets a new password
-      4. Complete — success page with a link back to login
-
-    Security properties verified:
-      - Unknown email shows the same page as a known email (no enumeration)
-      - Only a valid, unexpired token allows a password reset
-      - The token is invalidated after one successful use
-      - The new password must pass AUTH_PASSWORD_VALIDATORS
+    Each test is independent — setUp creates a fresh user and the test
+    database is rolled back between tests, so attempt records do not leak.
     """
 
     def setUp(self):
-        # alice has a known email; used to test the happy path.
-        self.user = make_user("alice", email="alice@example.com")
+        self.user      = make_user("alice")
+        self.login_url = reverse("amos:login")
 
-    def _confirm_url(self, user):
-        """Build a valid reset-confirm URL for *user* using Django's token generator."""
-        uid   = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-        return reverse("amos:password_reset_confirm", kwargs={"uidb64": uid, "token": token})
+    def _fail(self, username="alice", n=1):
+        """Submit n failed login attempts for *username*."""
+        for _ in range(n):
+            self.client.post(self.login_url, {
+                "username": username,
+                "password": "definitely-wrong",
+            })
 
-    # ── Step 1: Request page ───────────────────────────────────────────────
+    # ── Normal login (regression guard) ───────────────────────────────────
 
-    def test_request_page_loads(self):
-        response = self.client.get(reverse("amos:password_reset"))
+    def test_correct_credentials_still_log_in(self):
+        """The happy path must not be broken by the protection layer."""
+        response = self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
+        })
+        self.assertRedirects(response, reverse("amos:dashboard"))
+
+    def test_correct_credentials_authenticate_user(self):
+        response = self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
+        }, follow=True)
+        self.assertTrue(response.context["user"].is_authenticated)
+
+    # ── Attempt counter ────────────────────────────────────────────────────
+
+    def test_single_failure_does_not_lock(self):
+        """One wrong password must not trigger a lockout."""
+        self._fail(n=1)
+        attempt = LoginAttempt.objects.get(username="alice")
+        self.assertIsNone(attempt.locked_until)
+
+    def test_four_failures_do_not_lock(self):
+        """Four failures (one under the threshold) must not lock the account."""
+        self._fail(n=4)
+        attempt = LoginAttempt.objects.get(username="alice")
+        self.assertIsNone(attempt.locked_until)
+
+    def test_five_failures_trigger_lockout(self):
+        """The fifth consecutive failure must set a lockout timestamp."""
+        self._fail(n=5)
+        attempt = LoginAttempt.objects.get(username="alice")
+        self.assertIsNotNone(attempt.locked_until)
+        self.assertGreater(attempt.locked_until, timezone.now())
+
+    def test_failure_count_increments_correctly(self):
+        self._fail(n=3)
+        self.assertEqual(LoginAttempt.objects.get(username="alice").failed_count, 3)
+
+    # ── Lockout enforcement ────────────────────────────────────────────────
+
+    def test_locked_account_rejects_correct_password(self):
+        """
+        Core IDOR check: even the correct password must be blocked during
+        a lockout window so credential stuffing cannot succeed.
+        """
+        LoginAttempt.objects.create(
+            username="alice",
+            failed_count=5,
+            locked_until=timezone.now() + timedelta(minutes=10),
+        )
+        response = self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
+        }, follow=True)
+        self.assertFalse(response.context["user"].is_authenticated)
+
+    def test_locked_account_returns_200_not_redirect(self):
+        """A locked login attempt must re-render the page, not redirect."""
+        LoginAttempt.objects.create(
+            username="alice",
+            failed_count=5,
+            locked_until=timezone.now() + timedelta(minutes=10),
+        )
+        response = self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
+        })
         self.assertEqual(response.status_code, 200)
 
-    def test_known_email_sends_reset_email(self):
-        """A registered email address must trigger one outgoing reset email."""
-        self.client.post(reverse("amos:password_reset"), {"email": "alice@example.com"})
-        self.assertEqual(len(mail.outbox), 1)
-
-    def test_reset_email_contains_reset_link(self):
-        """The email body must contain the password-reset path."""
-        self.client.post(reverse("amos:password_reset"), {"email": "alice@example.com"})
-        self.assertIn("password-reset", mail.outbox[0].body)
-
-    def test_unknown_email_sends_no_email(self):
-        """
-        Anti-enumeration: submitting an unregistered address must not send
-        an email.  Confirming absence of delivery prevents account discovery.
-        """
-        self.client.post(reverse("amos:password_reset"), {"email": "ghost@example.com"})
-        self.assertEqual(len(mail.outbox), 0)
-
-    def test_both_known_and_unknown_email_redirect_to_same_done_page(self):
-        """
-        Anti-enumeration: both paths must end at the same done URL so an
-        attacker cannot tell from the response whether an address is registered.
-        """
-        known_resp   = self.client.post(reverse("amos:password_reset"), {"email": "alice@example.com"})
-        unknown_resp = self.client.post(reverse("amos:password_reset"), {"email": "ghost@example.com"})
-        done_url = reverse("amos:password_reset_done")
-        self.assertRedirects(known_resp,   done_url)
-        self.assertRedirects(unknown_resp, done_url)
-
-    def test_login_page_has_forgot_password_link(self):
-        """The login page must expose the reset entry point."""
-        response = self.client.get(reverse("amos:login"))
-        self.assertContains(response, reverse("amos:password_reset"))
-
-    # ── Step 2: Done page ─────────────────────────────────────────────────
-
-    def test_done_page_loads(self):
-        response = self.client.get(reverse("amos:password_reset_done"))
-        self.assertEqual(response.status_code, 200)
-
-    # ── Step 3: Confirm page ──────────────────────────────────────────────
-
-    def test_valid_token_confirm_page_loads(self):
-        """Following a genuine token link must show the set-password form."""
-        response = self.client.get(self._confirm_url(self.user), follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["validlink"])
-
-    def test_valid_token_can_set_new_password(self):
-        """Submitting a strong password with a valid token must update the hash."""
-        response = self.client.get(self._confirm_url(self.user), follow=True)
-        self.client.post(response.wsgi_request.path, {
-            "new_password1": NEW_PASSWORD,
-            "new_password2": NEW_PASSWORD,
+    def test_lockout_message_mentions_wait_time(self):
+        """The error message must tell the user how long to wait."""
+        LoginAttempt.objects.create(
+            username="alice",
+            failed_count=5,
+            locked_until=timezone.now() + timedelta(minutes=10),
+        )
+        response = self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
         })
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password(NEW_PASSWORD))
+        msg_texts = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("minute" in t for t in msg_texts))
 
-    def test_valid_reset_redirects_to_complete_page(self):
-        """A successful reset must redirect to the complete page."""
-        response = self.client.get(self._confirm_url(self.user), follow=True)
-        result = self.client.post(response.wsgi_request.path, {
-            "new_password1": NEW_PASSWORD,
-            "new_password2": NEW_PASSWORD,
+    # ── Username normalisation ─────────────────────────────────────────────
+
+    def test_username_tracking_is_case_insensitive(self):
+        """
+        Attempts with 'Alice' and 'alice' must count against the same record
+        so an attacker cannot bypass the counter by alternating case.
+        """
+        self._fail(username="Alice", n=3)
+        self._fail(username="ALICE", n=2)
+        attempt = LoginAttempt.objects.get(username="alice")
+        self.assertEqual(attempt.failed_count, 5)
+        self.assertIsNotNone(attempt.locked_until)
+
+    # ── Recovery ──────────────────────────────────────────────────────────
+
+    def test_successful_login_clears_attempt_record(self):
+        """After a successful login the attempt record must be deleted."""
+        LoginAttempt.objects.create(username="alice", failed_count=3)
+        self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
         })
-        self.assertRedirects(result, reverse("amos:password_reset_complete"))
+        self.assertFalse(LoginAttempt.objects.filter(username="alice").exists())
 
-    def test_weak_new_password_is_rejected(self):
+    def test_lockout_expiry_allows_login(self):
         """
-        AUTH_PASSWORD_VALIDATORS apply to the reset form just as they do at
-        registration — a weak password must be rejected and the old one kept.
+        Once the lockout window has elapsed the account must accept valid
+        credentials again — no admin intervention required.
         """
-        response = self.client.get(self._confirm_url(self.user), follow=True)
-        self.client.post(response.wsgi_request.path, {
-            "new_password1": "password123",
-            "new_password2": "password123",
+        LoginAttempt.objects.create(
+            username="alice",
+            failed_count=5,
+            # Expired 1 second ago.
+            locked_until=timezone.now() - timedelta(seconds=1),
+        )
+        response = self.client.post(self.login_url, {
+            "username": "alice",
+            "password": STRONG_PASSWORD,
         })
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password(STRONG_PASSWORD))
+        self.assertRedirects(response, reverse("amos:dashboard"))
 
-    def test_invalid_token_shows_invalid_link_page(self):
-        """
-        A tampered or expired token must render the template with
-        validlink=False so the user sees a clear error, not a 500 page.
-        """
-        uid     = urlsafe_base64_encode(force_bytes(self.user.pk))
-        bad_url = reverse("amos:password_reset_confirm",
-                          kwargs={"uidb64": uid, "token": "bad-token-xyz"})
-        response = self.client.get(bad_url, follow=True)
-        self.assertFalse(response.context["validlink"])
+    def test_lockout_expiry_resets_counter(self):
+        """After expiry the counter must restart from zero, not carry forward."""
+        LoginAttempt.objects.create(
+            username="alice",
+            failed_count=5,
+            locked_until=timezone.now() - timedelta(seconds=1),
+        )
+        # One failure after expiry must not immediately re-lock.
+        self._fail(n=1)
+        attempt = LoginAttempt.objects.get(username="alice")
+        self.assertIsNone(attempt.locked_until)
+        self.assertEqual(attempt.failed_count, 1)
 
-    def test_token_is_single_use(self):
-        """
-        After a successful reset the user's password hash changes, which
-        invalidates the original HMAC token.  A second attempt with the same
-        link must be rejected — reset links cannot be replayed.
-        """
-        confirm_url = self._confirm_url(self.user)
+    # ── Isolation between accounts ─────────────────────────────────────────
 
-        # First use: complete the reset successfully.
-        response = self.client.get(confirm_url, follow=True)
-        self.client.post(response.wsgi_request.path, {
-            "new_password1": NEW_PASSWORD,
-            "new_password2": NEW_PASSWORD,
+    def test_failures_on_one_account_do_not_affect_another(self):
+        """Lockout records are scoped per username — other accounts are unaffected."""
+        make_user("bob")
+        self._fail(username="alice", n=5)
+        # Bob's account must still accept correct credentials.
+        response = self.client.post(self.login_url, {
+            "username": "bob",
+            "password": STRONG_PASSWORD,
         })
-
-        # Second attempt: fresh client has no session carrying the old token,
-        # so Django must re-validate the raw token — which is now invalid.
-        second         = Client()
-        second_response = second.get(confirm_url, follow=True)
-        self.assertFalse(second_response.context["validlink"])
-
-    # ── Step 4: Complete page ─────────────────────────────────────────────
-
-    def test_complete_page_loads(self):
-        response = self.client.get(reverse("amos:password_reset_complete"))
-        self.assertEqual(response.status_code, 200)
-
-    def test_complete_page_links_to_login(self):
-        """The complete page must provide a direct path back to sign in."""
-        response = self.client.get(reverse("amos:password_reset_complete"))
-        self.assertContains(response, reverse("amos:login"))
+        self.assertRedirects(response, reverse("amos:dashboard"))

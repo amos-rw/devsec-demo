@@ -17,7 +17,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 
-from .models import Profile
+from .models import LoginAttempt, Profile
 
 
 class ProfileInline(admin.StackedInline):
@@ -52,3 +52,19 @@ admin.site.register(User, ExtendedUserAdmin)
 
 # Also register Profile on its own so it is searchable/filterable directly.
 admin.site.register(Profile)
+
+
+@admin.register(LoginAttempt)
+class LoginAttemptAdmin(admin.ModelAdmin):
+    """
+    Admin view for brute-force attempt records.
+    Allows administrators to inspect and manually clear lockouts.
+    """
+    list_display  = ("username", "failed_count", "last_failed_at", "locked_until", "is_locked")
+    list_filter   = ("locked_until",)
+    search_fields = ("username",)
+    readonly_fields = ("username", "failed_count", "last_failed_at", "locked_until")
+
+    @admin.display(boolean=True, description="Currently locked?")
+    def is_locked(self, obj):
+        return obj.is_locked
