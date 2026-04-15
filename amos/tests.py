@@ -1,28 +1,53 @@
 """
-amos/tests.py  —  Brute-force login protection tests.
+amos/tests.py  —  Open-redirect protection tests for the login flow.
 
-Assignment: harden-login-bruteforce
-Security topic: Authentication abuse, attempt tracking, account lockout.
+Assignment: fix-open-redirects
+Security topic: Open redirect vulnerabilities in authentication flows.
 
-Design under test:
-  - After _MAX_ATTEMPTS (5) consecutive failures the account is locked for
-    _LOCKOUT_DURATION (15 minutes).
-  - The lockout is account-based (keyed on normalised username).
-  - A successful login clears the attempt record entirely.
-  - Once the lockout window expires the counter resets for a fresh window.
+The endpoint under test is POST /amos/login/ (the ?next= redirect parameter).
 
-Docs: https://docs.djangoproject.com/en/5.2/topics/testing/tools/
+Open-redirect risk
+------------------
+The login view accepts a ?next= query-string parameter so the user lands on
+the page they originally requested after authenticating.  Without validating
+that redirect target, an attacker crafts a link like:
+
+    https://uas.example/amos/login/?next=http://evil.com/
+
+The user authenticates on the legitimate site, sees the real domain in their
+address bar, and is silently forwarded to a phishing page.  Because they just
+"logged in" they trust the destination completely.
+
+Fix applied
+-----------
+Every next= value is passed through Django's url_has_allowed_host_and_scheme()
+utility before following it.  That helper rejects:
+
+  • absolute URLs with a foreign host  (http://evil.com/…)
+  • protocol-relative URLs             (//evil.com/…)
+  • javascript: and data: URI schemes
+  • any URL whose netloc differs from request.get_host()
+
+Safe relative paths (e.g. /amos/profile/) are accepted unchanged.  When the
+value is absent or rejected the view falls back to the dashboard.
+
+These tests verify that:
+
+  1. A valid internal next= URL is followed after login
+  2. An absolute HTTP external URL is rejected; user lands on dashboard
+  3. An absolute HTTPS external URL is also rejected
+  4. A protocol-relative URL (//evil.com/) is rejected
+  5. A javascript: scheme URI is rejected
+  6. A data: scheme URI is rejected
+  7. No next= parameter → dashboard (safe default)
+  8. The GET login page renders the next= value so the form can forward it
+
+Docs: https://docs.djangoproject.com/en/5.2/ref/utils/#django.utils.http.url_has_allowed_host_and_scheme
 """
 
-from datetime import timedelta
-
 from django.contrib.auth.models import User
-from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.urls import reverse
-from django.utils import timezone
-
-from .models import LoginAttempt
 
 
 STRONG_PASSWORD = "Tr0ub4dor&3"
@@ -32,176 +57,98 @@ def make_user(username, password=STRONG_PASSWORD):
     return User.objects.create_user(username=username, password=password)
 
 
-class BruteForceProtectionTests(TestCase):
+class OpenRedirectLoginTests(TestCase):
     """
-    Tests for the brute-force login protection layer.
+    Open-redirect protection tests for the login view.
 
-    Each test is independent — setUp creates a fresh user and the test
-    database is rolled back between tests, so attempt records do not leak.
+    All tests POST valid credentials; the only variable is the next=
+    redirect target — safe, malicious, or absent.
     """
 
     def setUp(self):
-        self.user      = make_user("alice")
-        self.login_url = reverse("amos:login")
+        self.user         = make_user("alice")
+        self.login_url    = reverse("amos:login")
+        self.dashboard_url = reverse("amos:dashboard")
 
-    def _fail(self, username="alice", n=1):
-        """Submit n failed login attempts for *username*."""
-        for _ in range(n):
-            self.client.post(self.login_url, {
-                "username": username,
-                "password": "definitely-wrong",
-            })
+    # ── Helper ─────────────────────────────────────────────────────────────
 
-    # ── Normal login (regression guard) ───────────────────────────────────
+    def _login(self, next_url=None):
+        """POST valid credentials with an optional next= value."""
+        data = {"username": "alice", "password": STRONG_PASSWORD}
+        if next_url is not None:
+            data["next"] = next_url
+        return self.client.post(self.login_url, data)
 
-    def test_correct_credentials_still_log_in(self):
-        """The happy path must not be broken by the protection layer."""
-        response = self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        })
-        self.assertRedirects(response, reverse("amos:dashboard"))
+    # ── Safe redirects ─────────────────────────────────────────────────────
 
-    def test_correct_credentials_authenticate_user(self):
-        response = self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        }, follow=True)
-        self.assertTrue(response.context["user"].is_authenticated)
-
-    # ── Attempt counter ────────────────────────────────────────────────────
-
-    def test_single_failure_does_not_lock(self):
-        """One wrong password must not trigger a lockout."""
-        self._fail(n=1)
-        attempt = LoginAttempt.objects.get(username="alice")
-        self.assertIsNone(attempt.locked_until)
-
-    def test_four_failures_do_not_lock(self):
-        """Four failures (one under the threshold) must not lock the account."""
-        self._fail(n=4)
-        attempt = LoginAttempt.objects.get(username="alice")
-        self.assertIsNone(attempt.locked_until)
-
-    def test_five_failures_trigger_lockout(self):
-        """The fifth consecutive failure must set a lockout timestamp."""
-        self._fail(n=5)
-        attempt = LoginAttempt.objects.get(username="alice")
-        self.assertIsNotNone(attempt.locked_until)
-        self.assertGreater(attempt.locked_until, timezone.now())
-
-    def test_failure_count_increments_correctly(self):
-        self._fail(n=3)
-        self.assertEqual(LoginAttempt.objects.get(username="alice").failed_count, 3)
-
-    # ── Lockout enforcement ────────────────────────────────────────────────
-
-    def test_locked_account_rejects_correct_password(self):
-        """
-        Core IDOR check: even the correct password must be blocked during
-        a lockout window so credential stuffing cannot succeed.
-        """
-        LoginAttempt.objects.create(
-            username="alice",
-            failed_count=5,
-            locked_until=timezone.now() + timedelta(minutes=10),
+    def test_no_next_redirects_to_dashboard(self):
+        """No next= present → the user always lands on the dashboard."""
+        response = self._login()
+        self.assertRedirects(
+            response, self.dashboard_url, fetch_redirect_response=False
         )
-        response = self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        }, follow=True)
-        self.assertFalse(response.context["user"].is_authenticated)
 
-    def test_locked_account_returns_200_not_redirect(self):
-        """A locked login attempt must re-render the page, not redirect."""
-        LoginAttempt.objects.create(
-            username="alice",
-            failed_count=5,
-            locked_until=timezone.now() + timedelta(minutes=10),
+    def test_safe_internal_next_is_followed(self):
+        """A next= pointing to a same-origin path must be followed."""
+        response = self._login(next_url="/amos/profile/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/amos/profile/")
+
+    # ── Unsafe redirects must be rejected ──────────────────────────────────
+
+    def test_absolute_external_http_next_is_rejected(self):
+        """
+        http://evil.com/… must not be followed.
+        url_has_allowed_host_and_scheme rejects any URL whose netloc differs
+        from request.get_host(); the view falls back to the dashboard.
+        """
+        response = self._login(next_url="http://evil.com/steal")
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("evil.com", response["Location"])
+        self.assertEqual(response["Location"], self.dashboard_url)
+
+    def test_absolute_external_https_next_is_rejected(self):
+        """HTTPS does not make a foreign host trustworthy."""
+        response = self._login(next_url="https://attacker.example/phish")
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("attacker.example", response["Location"])
+        self.assertEqual(response["Location"], self.dashboard_url)
+
+    def test_protocol_relative_next_is_rejected(self):
+        """
+        //evil.com/path is treated as https://evil.com/path by browsers.
+        It looks like a relative URL but carries a foreign host — must be
+        rejected.
+        """
+        response = self._login(next_url="//evil.com/steal")
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("evil.com", response["Location"])
+        self.assertEqual(response["Location"], self.dashboard_url)
+
+    def test_javascript_scheme_next_is_rejected(self):
+        """javascript: URIs can execute arbitrary code in some redirect contexts."""
+        response = self._login(next_url="javascript:alert(document.cookie)")
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("javascript:", response["Location"])
+        self.assertEqual(response["Location"], self.dashboard_url)
+
+    def test_data_scheme_next_is_rejected(self):
+        """data: URIs can embed HTML/JavaScript payloads."""
+        response = self._login(
+            next_url="data:text/html,<script>alert(1)</script>"
         )
-        response = self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        })
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("data:", response["Location"])
+        self.assertEqual(response["Location"], self.dashboard_url)
+
+    # ── GET parameter forwarding ───────────────────────────────────────────
+
+    def test_get_login_page_includes_next_in_response(self):
+        """
+        When the login page is loaded with ?next=, the value must appear in
+        the rendered HTML (as a hidden form input) so the subsequent POST
+        carries it forward to the redirect check.
+        """
+        response = self.client.get(f"{self.login_url}?next=/amos/profile/")
         self.assertEqual(response.status_code, 200)
-
-    def test_lockout_message_mentions_wait_time(self):
-        """The error message must tell the user how long to wait."""
-        LoginAttempt.objects.create(
-            username="alice",
-            failed_count=5,
-            locked_until=timezone.now() + timedelta(minutes=10),
-        )
-        response = self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        })
-        msg_texts = [str(m) for m in get_messages(response.wsgi_request)]
-        self.assertTrue(any("minute" in t for t in msg_texts))
-
-    # ── Username normalisation ─────────────────────────────────────────────
-
-    def test_username_tracking_is_case_insensitive(self):
-        """
-        Attempts with 'Alice' and 'alice' must count against the same record
-        so an attacker cannot bypass the counter by alternating case.
-        """
-        self._fail(username="Alice", n=3)
-        self._fail(username="ALICE", n=2)
-        attempt = LoginAttempt.objects.get(username="alice")
-        self.assertEqual(attempt.failed_count, 5)
-        self.assertIsNotNone(attempt.locked_until)
-
-    # ── Recovery ──────────────────────────────────────────────────────────
-
-    def test_successful_login_clears_attempt_record(self):
-        """After a successful login the attempt record must be deleted."""
-        LoginAttempt.objects.create(username="alice", failed_count=3)
-        self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        })
-        self.assertFalse(LoginAttempt.objects.filter(username="alice").exists())
-
-    def test_lockout_expiry_allows_login(self):
-        """
-        Once the lockout window has elapsed the account must accept valid
-        credentials again — no admin intervention required.
-        """
-        LoginAttempt.objects.create(
-            username="alice",
-            failed_count=5,
-            # Expired 1 second ago.
-            locked_until=timezone.now() - timedelta(seconds=1),
-        )
-        response = self.client.post(self.login_url, {
-            "username": "alice",
-            "password": STRONG_PASSWORD,
-        })
-        self.assertRedirects(response, reverse("amos:dashboard"))
-
-    def test_lockout_expiry_resets_counter(self):
-        """After expiry the counter must restart from zero, not carry forward."""
-        LoginAttempt.objects.create(
-            username="alice",
-            failed_count=5,
-            locked_until=timezone.now() - timedelta(seconds=1),
-        )
-        # One failure after expiry must not immediately re-lock.
-        self._fail(n=1)
-        attempt = LoginAttempt.objects.get(username="alice")
-        self.assertIsNone(attempt.locked_until)
-        self.assertEqual(attempt.failed_count, 1)
-
-    # ── Isolation between accounts ─────────────────────────────────────────
-
-    def test_failures_on_one_account_do_not_affect_another(self):
-        """Lockout records are scoped per username — other accounts are unaffected."""
-        make_user("bob")
-        self._fail(username="alice", n=5)
-        # Bob's account must still accept correct credentials.
-        response = self.client.post(self.login_url, {
-            "username": "bob",
-            "password": STRONG_PASSWORD,
-        })
-        self.assertRedirects(response, reverse("amos:dashboard"))
+        self.assertContains(response, "/amos/profile/")

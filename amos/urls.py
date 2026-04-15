@@ -71,6 +71,11 @@ urlpatterns = [
     # --- Profile detail (object-level access control enforced in the view) ---
     path("profile/<int:pk>/", views.view_profile, name="view_profile"),
 
+    # --- AJAX bio update (CSRF enforced — no @csrf_exempt) ---
+    # JavaScript callers must include the csrftoken cookie value in the
+    # X-CSRFToken request header.  See update_bio docstring and profile.html.
+    path("profile/bio/", views.update_bio, name="update_bio"),
+
     # --- Instructor only ---
     path("roster/", views.roster, name="roster"),
 ]

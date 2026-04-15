@@ -3,6 +3,7 @@ amos/views.py — authentication lifecycle views.
 Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/
 """
 
+import json
 from datetime import timedelta
 
 from django.contrib import messages
@@ -11,10 +12,11 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.http import require_POST
 
 from .decorators import instructor_required
 from .forms import LoginForm, ProfileUpdateForm, RegistrationForm
@@ -48,6 +50,36 @@ def register(request):
 
 
 def user_login(request):
+    """Authenticate a user and redirect them to their intended destination.
+
+    Open-redirect risk
+    ------------------
+    The login page accepts a ``?next=`` query-string parameter so the user
+    lands on the page they originally requested after authenticating.  Without
+    validation, an attacker can craft a link like::
+
+        /amos/login/?next=http://evil.com/phish
+
+    The user authenticates on the real site, sees the familiar domain in the
+    address bar, and is then silently forwarded to the attacker's page.  Because
+    they just "logged in" they trust the destination.
+
+    Fix applied here
+    ----------------
+    Every ``next=`` value is passed through Django's
+    ``url_has_allowed_host_and_scheme()`` utility before use.  That helper
+    rejects:
+
+    * absolute URLs pointing to foreign hosts  (``http://evil.com/…``)
+    * protocol-relative URLs                   (``//evil.com/…``)
+    * ``javascript:`` and ``data:`` URI schemes
+    * any URL whose netloc does not match ``request.get_host()``
+
+    Safe same-origin paths (e.g. ``/amos/profile/``) are followed unchanged.
+    When the value is absent or rejected the user lands on the dashboard.
+
+    Docs: https://docs.djangoproject.com/en/5.2/ref/utils/#django.utils.http.url_has_allowed_host_and_scheme
+    """
     if request.user.is_authenticated:
         return redirect("amos:dashboard")
 
@@ -217,3 +249,45 @@ def view_profile(request, pk):
         "profile_user": target_user,
         "profile_obj": profile_obj,
     })
+
+
+@login_required
+@require_POST
+def update_bio(request):
+    """AJAX endpoint: update the current user's bio and return JSON.
+
+    CSRF concern
+    ------------
+    This is a state-changing POST that is called over JavaScript fetch().
+    The tempting shortcut — adding ``@csrf_exempt`` to 'make it work' — removes
+    ALL forgery protection.  Any page on any origin could then silently update
+    the bio of any logged-in user (a classic CSRF attack).
+
+    Fix applied here
+    ----------------
+    No exemption is added.  Django's CsrfViewMiddleware stays fully active.
+    The JavaScript caller is responsible for reading the ``csrftoken`` cookie
+    (which is intentionally NOT HttpOnly so JS can access it) and sending the
+    value in the ``X-CSRFToken`` request header.  The middleware validates the
+    header against the cookie on every POST.
+
+    Docs: https://docs.djangoproject.com/en/5.2/howto/csrf/#ajax
+    """
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+
+    bio = payload.get("bio", "").strip()
+
+    if len(bio) > 500:
+        return JsonResponse(
+            {"error": "Bio must be 500 characters or fewer."},
+            status=400,
+        )
+
+    profile, _ = Profile.objects.get_or_create(user=request.user)
+    profile.bio = bio
+    profile.save()
+
+    return JsonResponse({"status": "ok"})

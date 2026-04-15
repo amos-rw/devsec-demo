@@ -2,6 +2,59 @@
 {% block title %}Profile{% endblock %}
 {% block topbar_title %}Profile{% endblock %}
 
+{% block extra_scripts %}
+{#
+  CSRF + AJAX pattern — correct implementation
+  ============================================
+  Django's CsrfViewMiddleware validates every state-changing request.
+  For HTML forms the {% csrf_token %} tag injects a hidden field handled
+  automatically.  For JavaScript fetch() calls the token must be read from
+  the `csrftoken` cookie (intentionally NOT HttpOnly) and sent as the
+  X-CSRFToken request header.
+
+  The WRONG shortcut many developers reach for is adding @csrf_exempt to
+  the view.  That disables protection entirely — any page on any origin could
+  forge requests on behalf of the logged-in user.  Never do that.
+
+  Docs: https://docs.djangoproject.com/en/5.2/howto/csrf/#ajax
+#}
+<script>
+/**
+ * Read the csrftoken cookie set by Django's CsrfViewMiddleware.
+ * The cookie is NOT HttpOnly precisely so JavaScript can read it here.
+ */
+function getCsrfToken() {
+  const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+/**
+ * Save the bio via AJAX without a full page reload.
+ *
+ * Key points:
+ *   1. method: "POST"  — state-changing, so CSRF applies.
+ *   2. "X-CSRFToken" header — required.  Without it the server returns 403.
+ *   3. No @csrf_exempt on the server — the middleware stays fully active.
+ */
+async function saveBioAjax(bio) {
+  const response = await fetch("{% url 'amos:update_bio' %}", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCsrfToken(),   // ← mandatory; absence → 403 Forbidden
+    },
+    body: JSON.stringify({ bio }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || "Request failed");
+  }
+  return response.json();
+}
+</script>
+{% endblock %}
+
 {% block content %}
 <div class="card" style="max-width:600px">
   <h1 class="card-title">Your profile</h1>
