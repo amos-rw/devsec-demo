@@ -1,151 +1,142 @@
 """
-amos/tests.py  —  Audit logging tests for security-relevant auth events.
+amos/tests.py  —  Stored XSS tests for user-controlled profile content.
 
-Assignment: add-auth-audit-logging
-Security topic: Audit logging, accountability, and security event visibility.
+Assignment: fix-stored-xss-profile-content
+Security topic: Stored cross-site scripting (XSS) in user bios.
 
-Why audit logging matters
---------------------------
-Prevention controls (password hashing, CSRF tokens, rate-limiting) stop most
-attacks.  Audit logging answers the question "what happened after the fact?"
-— it is essential for incident response, compliance, and detecting patterns
-(e.g. slow-and-low brute force) that no single request triggers.
+Why stored XSS matters
+-----------------------
+Unlike reflected XSS (which requires tricking a user into clicking a crafted
+URL), stored XSS persists in the database and fires automatically whenever
+anyone views the affected page.  A single attacker who can write a malicious
+bio poisons every future viewer — including administrators.
 
-Events logged by this app
---------------------------
-  registration.success   — a new account was created
-  login.success          — a user authenticated successfully
-  login.failure          — bad credentials were presented
-  login.locked           — a request was rejected because the account is locked
-  logout.success         — a user signed out
-  password_change.success — a logged-in user changed their password
-  password_reset.requested — a password-reset email was requested
-  password_reset.complete  — a password was reset via a valid token
+Typical attack payloads
+-----------------------
+  <script>...</script>          — executes arbitrary JavaScript
+  <img src=x onerror=alert(1)> — fires JS via an event handler attribute
+  <svg onload=fetch(...)>       — exfiltrates session cookies or CSRF tokens
 
-What is NEVER logged
----------------------
-  Raw passwords, password hashes, CSRF tokens, and session keys must never
-  appear in any log message.  The tests enforce this for the login path.
+The defence
+-----------
+Django's template engine escapes five special characters by default:
+  <  →  &lt;    >  →  &gt;    "  →  &quot;    '  →  &#x27;    &  →  &amp;
 
-These tests verify that:
+As long as no {{ var|safe }} or {% autoescape off %} is present, stored
+content can never break out of a text node into executable markup.
 
-  1. Registration emits registration.success
-  2. Successful login emits login.success
-  3. Failed login emits login.failure
-  4. A locked-out login attempt emits login.locked
-  5. Logout emits logout.success
-  6. Password change emits password_change.success
-  7. A password-reset request emits password_reset.requested
-  8. Raw passwords never appear in any audit log line
+What these tests verify
+-----------------------
+  1. A stored <script> tag in a bio is entity-escaped, not executed.
+  2. An <img onerror=…> payload is entity-escaped.
+  3. Plain text in a bio renders normally (no over-escaping).
+  4. Self-XSS: the payload is escaped even on the owner's own profile view.
 
-Docs: https://docs.djangoproject.com/en/5.2/topics/logging/#django-s-logging-extensions
+Docs: https://docs.djangoproject.com/en/5.2/ref/templates/language/#automatic-html-escaping
 """
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.test import TestCase
 from django.urls import reverse
 
+from .models import Profile
 
-STRONG_PASSWORD = "Tr0ub4dor&3"
 
-
-class AuditLoggingTests(TestCase):
+class StoredXSSProfileTests(TestCase):
     """
-    Each test uses assertLogs("amos.audit", ...) to capture records emitted
-    by the amos.audit logger and assert the expected event keyword is present.
+    Each test writes a potentially malicious bio directly into the database
+    (simulating a stored payload), then fetches the view_profile page and
+    inspects the raw HTML for escaped vs. unescaped content.
     """
 
     def setUp(self):
-        self.user = User.objects.create_user(
-            "alice", email="alice@example.com", password=STRONG_PASSWORD
+        # alice: user whose bio carries the payload
+        self.alice = User.objects.create_user(
+            "alice", email="alice@example.com", password="Tr0ub4dor&3"
         )
-        self.login_url = reverse("amos:login")
+        Profile.objects.get_or_create(user=self.alice)
+
+        # bob: instructor who can view any profile (bypasses IDOR ownership check)
+        self.bob = User.objects.create_user(
+            "bob", email="bob@example.com", password="Tr0ub4dor&3"
+        )
+        instructor_group, _ = Group.objects.get_or_create(name="instructor")
+        self.bob.groups.add(instructor_group)
 
     # ── Helper ─────────────────────────────────────────────────────────────
 
-    def _post_login(self, password=STRONG_PASSWORD):
-        return self.client.post(
-            self.login_url,
-            {"username": "alice", "password": password},
+    def _set_bio(self, user, bio: str) -> None:
+        """Write bio directly to the database — no HTTP round-trip."""
+        profile, _ = Profile.objects.get_or_create(user=user)
+        profile.bio = bio
+        profile.save()
+
+    def _get_profile_page(self, viewer, target_pk: int):
+        self.client.force_login(viewer)
+        return self.client.get(
+            reverse("amos:view_profile", kwargs={"pk": target_pk})
         )
 
-    # ── Registration ───────────────────────────────────────────────────────
+    # ── Script-tag payload ─────────────────────────────────────────────────
 
-    def test_registration_is_logged(self):
-        """A new registration must emit registration.success."""
-        with self.assertLogs("amos.audit", level="INFO") as cm:
-            self.client.post(reverse("amos:register"), {
-                "username": "bob",
-                "email": "bob@example.com",
-                "password1": STRONG_PASSWORD,
-                "password2": STRONG_PASSWORD,
-            })
-        self.assertTrue(any("registration.success" in m for m in cm.output))
-
-    # ── Login ──────────────────────────────────────────────────────────────
-
-    def test_login_success_is_logged(self):
-        """Successful authentication must emit login.success."""
-        with self.assertLogs("amos.audit", level="INFO") as cm:
-            self._post_login()
-        self.assertTrue(any("login.success" in m for m in cm.output))
-
-    def test_login_failure_is_logged(self):
-        """A failed login attempt must emit login.failure."""
-        with self.assertLogs("amos.audit", level="WARNING") as cm:
-            self._post_login(password="wrongpassword")
-        self.assertTrue(any("login.failure" in m for m in cm.output))
-
-    def test_login_lockout_is_logged(self):
+    def test_script_tag_in_bio_is_escaped(self):
         """
-        Once an account is locked, subsequent attempts must emit login.locked.
-        Five failures trigger the lockout; the sixth request hits the guard.
+        A stored <script> payload must appear entity-escaped in the HTML, not
+        as a live script element that the browser would execute.
         """
-        with self.assertLogs("amos.audit", level="WARNING") as cm:
-            for _ in range(6):
-                self._post_login(password="wrongpassword")
-        self.assertTrue(any("login.locked" in m for m in cm.output))
+        self._set_bio(self.alice, "<script>alert('xss')</script>")
+        response = self._get_profile_page(self.bob, self.alice.pk)
 
-    # ── Logout ─────────────────────────────────────────────────────────────
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
 
-    def test_logout_is_logged(self):
-        """POST to logout must emit logout.success."""
-        self.client.force_login(self.user)
-        with self.assertLogs("amos.audit", level="INFO") as cm:
-            self.client.post(reverse("amos:logout"))
-        self.assertTrue(any("logout.success" in m for m in cm.output))
+        # Raw tag must not appear anywhere in the page.
+        self.assertNotIn("<script>alert('xss')</script>", content)
+        # Escaped version must be present (proves it was rendered, not silently dropped).
+        self.assertIn("&lt;script&gt;", content)
 
-    # ── Password change ────────────────────────────────────────────────────
+    # ── Event-handler payload ──────────────────────────────────────────────
 
-    def test_password_change_is_logged(self):
-        """A successful in-session password change must emit password_change.success."""
-        self.client.force_login(self.user)
-        with self.assertLogs("amos.audit", level="INFO") as cm:
-            self.client.post(reverse("amos:password_change"), {
-                "old_password": STRONG_PASSWORD,
-                "new_password1": "NewP@ssw0rd!",
-                "new_password2": "NewP@ssw0rd!",
-            })
-        self.assertTrue(any("password_change.success" in m for m in cm.output))
-
-    # ── Password reset ─────────────────────────────────────────────────────
-
-    def test_password_reset_request_is_logged(self):
-        """Submitting the password-reset form must emit password_reset.requested."""
-        with self.assertLogs("amos.audit", level="INFO") as cm:
-            self.client.post(reverse("amos:password_reset"), {
-                "email": "alice@example.com",
-            })
-        self.assertTrue(any("password_reset.requested" in m for m in cm.output))
-
-    # ── Privacy guard ──────────────────────────────────────────────────────
-
-    def test_password_never_appears_in_logs(self):
+    def test_img_onerror_in_bio_is_escaped(self):
         """
-        Raw passwords must never be written to the audit log.
-        A log file compromise must not expose user credentials.
+        An <img onerror=…> payload must be escaped so the attribute cannot
+        trigger JavaScript execution.
         """
-        with self.assertLogs("amos.audit", level="INFO") as cm:
-            self._post_login()
-        for line in cm.output:
-            self.assertNotIn(STRONG_PASSWORD, line)
+        self._set_bio(self.alice, '<img src=x onerror=alert(1)>')
+        response = self._get_profile_page(self.bob, self.alice.pk)
+
+        content = response.content.decode()
+
+        # Raw payload must not appear in the markup.
+        self.assertNotIn('<img src=x onerror=alert(1)>', content)
+        # Opening angle bracket of the tag must be escaped.
+        self.assertIn("&lt;img", content)
+
+    # ── Normal bio text ────────────────────────────────────────────────────
+
+    def test_safe_bio_text_renders_correctly(self):
+        """
+        Plain text in the bio must appear unchanged so legitimate users are
+        not affected by the escaping defence.
+        """
+        self._set_bio(self.alice, "I love Python and security!")
+        response = self._get_profile_page(self.bob, self.alice.pk)
+        self.assertContains(response, "I love Python and security!")
+
+    # ── Self-XSS ───────────────────────────────────────────────────────────
+
+    def test_own_profile_xss_payload_is_escaped(self):
+        """
+        Even viewing your own profile, a stored payload must be escaped.
+        Self-XSS can be chained with other techniques, so it is not exempt.
+        """
+        self._set_bio(self.alice, "<script>document.cookie='stolen'</script>")
+        # alice views her own profile — no IDOR restriction applies.
+        response = self._get_profile_page(self.alice, self.alice.pk)
+
+        content = response.content.decode()
+        # The exact payload must not appear unescaped.  We test the specific
+        # payload string rather than any <script> tag because the page
+        # legitimately includes <script> blocks from the base template.
+        self.assertNotIn("<script>document.cookie=", content)
+        self.assertIn("&lt;script&gt;", content)

@@ -40,6 +40,22 @@
     <hr class="divider">
     <div>
       <span class="info-label" style="display:block;margin-bottom:0.4rem">Bio</span>
+      {% comment %}
+        XSS guard — do NOT add |safe here.
+
+        The bio is user-supplied content.  Adding the |safe filter bypasses
+        Django's auto-escaping, which would allow a payload like
+        <script>...</script> or an onerror event handler stored in the database
+        to execute as JavaScript in every visitor's browser — stored XSS.
+
+        Django's template engine escapes these characters automatically:
+          <  ->  &lt;    >  ->  &gt;    "  ->  &quot;
+          '  ->  &#x27;  &  ->  &amp;
+
+        The stored payload is displayed as visible text, never executed.
+
+        Docs: https://docs.djangoproject.com/en/5.2/ref/templates/language/#automatic-html-escaping
+      {% endcomment %}
       <p style="font-size:0.9rem;color:var(--text);line-height:1.6;margin:0">{{ profile_obj.bio }}</p>
     </div>
   {% endif %}
