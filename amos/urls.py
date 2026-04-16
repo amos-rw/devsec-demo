@@ -68,6 +68,12 @@ urlpatterns = [
     path("password-change/", views.password_change, name="password_change"),
     path("logout/", views.user_logout, name="logout"),
 
+    # --- Access-controlled file serving ---
+    # Files are routed through Django so ownership is verified before content
+    # is returned.  MEDIA_ROOT is NOT wired into urls.py — all access goes here.
+    # file_type: 'avatar' or 'document'; pk: User primary key.
+    path("files/<str:file_type>/<int:pk>/", views.serve_file, name="serve_file"),
+
     # --- Profile detail (object-level access control enforced in the view) ---
     path("profile/<int:pk>/", views.view_profile, name="view_profile"),
 

@@ -4,6 +4,7 @@ Docs: https://docs.djangoproject.com/en/5.2/topics/auth/default/
 """
 
 import json
+import os
 from datetime import timedelta
 
 from django.contrib import messages
@@ -12,7 +13,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied
-from django.http import HttpResponseRedirect, JsonResponse
+from django.http import FileResponse, Http404, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -175,7 +176,10 @@ def profile(request):
     profile_obj, _ = Profile.objects.get_or_create(user=request.user)
 
     if request.method == "POST":
-        form = ProfileUpdateForm(request.POST, instance=profile_obj)
+        # request.FILES must be passed alongside request.POST so Django can
+        # access uploaded file data.  The form element must also carry
+        # enctype="multipart/form-data" — without it, no file bytes arrive.
+        form = ProfileUpdateForm(request.POST, request.FILES, instance=profile_obj)
         if form.is_valid():
             form.save()
             messages.success(request, "Your profile has been updated.")
@@ -183,7 +187,70 @@ def profile(request):
     else:
         form = ProfileUpdateForm(instance=profile_obj)
 
-    return render(request, "amos/profile.html", {"form": form})
+    return render(request, "amos/profile.html", {"form": form, "profile_obj": profile_obj})
+
+
+# ---------------------------------------------------------------------------
+# File content types for the serve view
+# ---------------------------------------------------------------------------
+
+_AVATAR_CONTENT_TYPES = {
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png":  "image/png",
+    ".gif":  "image/gif",
+    ".webp": "image/webp",
+}
+
+_DOCUMENT_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8",
+}
+
+
+@login_required
+def serve_file(request, file_type, pk):
+    """Serve an uploaded file with access control enforced.
+
+    Risk: if uploaded files were served directly from the web server's static
+    directory (e.g. nginx serving MEDIA_ROOT), anyone with a guessable URL
+    could access any user's files.  Even UUID filenames only provide obscurity,
+    not real access control.
+
+    Fix applied here: files are routed through this Django view.  The view
+    checks ownership (or instructor role) before opening the file from
+    storage.  The path on disk is never exposed to the client.
+
+    file_type must be 'avatar' or 'document'.
+    pk is the User primary key whose file is being requested.
+    """
+    is_instructor = request.user.groups.filter(name="instructor").exists()
+    if request.user.pk != pk and not is_instructor:
+        raise PermissionDenied
+
+    profile_obj = get_object_or_404(Profile, user__pk=pk)
+
+    if file_type == "avatar":
+        upload = profile_obj.avatar
+        content_type_map = _AVATAR_CONTENT_TYPES
+        disposition = "inline"
+    elif file_type == "document":
+        upload = profile_obj.document
+        content_type_map = _DOCUMENT_CONTENT_TYPES
+        disposition = "attachment"
+    else:
+        raise Http404
+
+    if not upload:
+        raise Http404
+
+    ext = os.path.splitext(upload.name)[1].lower()
+    content_type = content_type_map.get(ext, "application/octet-stream")
+
+    response = FileResponse(upload.open("rb"), content_type=content_type)
+    # inline for images (display in browser); attachment forces download for docs.
+    response["Content-Disposition"] = disposition
+    return response
 
 
 @login_required

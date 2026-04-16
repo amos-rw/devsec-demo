@@ -79,8 +79,33 @@ async function saveBioAjax(bio) {
 
   <hr class="divider">
 
-  <!-- Editable bio -->
-  <form method="post" novalidate>
+  <!-- Current uploads (read-only summary) -->
+  {% if profile_obj.avatar or profile_obj.document %}
+    <hr class="divider">
+    <div class="info-grid" style="margin-bottom:1rem">
+      {% if profile_obj.avatar %}
+        <div class="info-row">
+          <span class="info-label">Current avatar</span>
+          <span class="info-value">
+            <a href="{% url 'amos:serve_file' 'avatar' user.pk %}" style="color:var(--accent)">View</a>
+          </span>
+        </div>
+      {% endif %}
+      {% if profile_obj.document %}
+        <div class="info-row">
+          <span class="info-label">Current document</span>
+          <span class="info-value">
+            <a href="{% url 'amos:serve_file' 'document' user.pk %}" style="color:var(--accent)">Download</a>
+          </span>
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <!-- Editable profile form (bio + file uploads) -->
+  {# enctype="multipart/form-data" is required for file uploads — without it,
+     the browser sends only the text fields and the file never reaches Django. #}
+  <form method="post" enctype="multipart/form-data" novalidate>
     {% csrf_token %}
     {% for field in form %}
       <div class="form-group">

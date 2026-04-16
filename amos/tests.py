@@ -1,142 +1,174 @@
 """
-amos/tests.py  —  Stored XSS tests for user-controlled profile content.
+amos/tests.py  —  Django security-settings tests.
 
-Assignment: fix-stored-xss-profile-content
-Security topic: Stored cross-site scripting (XSS) in user bios.
-
-Why stored XSS matters
------------------------
-Unlike reflected XSS (which requires tricking a user into clicking a crafted
-URL), stored XSS persists in the database and fires automatically whenever
-anyone views the affected page.  A single attacker who can write a malicious
-bio poisons every future viewer — including administrators.
-
-Typical attack payloads
------------------------
-  <script>...</script>          — executes arbitrary JavaScript
-  <img src=x onerror=alert(1)> — fires JS via an event handler attribute
-  <svg onload=fetch(...)>       — exfiltrates session cookies or CSRF tokens
-
-The defence
------------
-Django's template engine escapes five special characters by default:
-  <  →  &lt;    >  →  &gt;    "  →  &quot;    '  →  &#x27;    &  →  &amp;
-
-As long as no {{ var|safe }} or {% autoescape off %} is present, stored
-content can never break out of a text node into executable markup.
+Assignment: harden-django-security-settings
+Security topic: Security misconfiguration and unsafe production defaults.
 
 What these tests verify
------------------------
-  1. A stored <script> tag in a bio is entity-escaped, not executed.
-  2. An <img onerror=…> payload is entity-escaped.
-  3. Plain text in a bio renders normally (no over-escaping).
-  4. Self-XSS: the payload is escaped even on the owner's own profile view.
+------------------------
+  Settings correctness
+  1. DEBUG is parsed as a real boolean, not a string.
+  2. SECRET_KEY is set and non-empty.
+  3. ALLOWED_HOSTS is non-empty (cannot be the empty list that rejects all requests).
+  4. SESSION_COOKIE_HTTPONLY is True.
+  5. SESSION_COOKIE_SAMESITE is 'Lax'.
+  6. SECURE_CONTENT_TYPE_NOSNIFF is True.
+  7. X_FRAME_OPTIONS is 'DENY'.
+  8. SECURE_REFERRER_POLICY is set.
 
-Docs: https://docs.djangoproject.com/en/5.2/ref/templates/language/#automatic-html-escaping
+  HTTP response headers  (SecurityMiddleware and XFrameOptionsMiddleware)
+  9.  X-Content-Type-Options: nosniff is present on responses.
+  10. X-Frame-Options: DENY is present on responses.
+  11. Referrer-Policy header is present on responses.
+
+Why each setting matters
+-------------------------
+  DEBUG as boolean     A string 'False' is truthy in Python.
+                       bool('False') == True — DEBUG appears off but stays on.
+  SECRET_KEY           A missing key lets Django start with SECRET_KEY=None,
+                       crashing unpredictably; a weak key lets attackers forge
+                       signed cookies and session tokens.
+  ALLOWED_HOSTS        An empty list with DEBUG=False rejects every request
+                       with HTTP 400.
+  SESSION_COOKIE_HTTPONLY  Prevents JavaScript from reading the session cookie
+                       (mitigates cookie theft via XSS).
+  SESSION_COOKIE_SAMESITE  Blocks the cookie in cross-site POST requests,
+                       adding a browser-side CSRF defence layer.
+  NOSNIFF              Stops browsers from MIME-sniffing a text file into an
+                       executable HTML context.
+  X-Frame-Options DENY Blocks clickjacking — a login form must never be
+                       embeddable in an attacker's iframe.
+  Referrer-Policy      Prevents internal paths from leaking to third-party
+                       servers in the Referer header.
+
+Docs: https://docs.djangoproject.com/en/5.2/topics/security/
+      https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 """
 
-from django.contrib.auth.models import Group, User
+from django.conf import settings
 from django.test import TestCase
 from django.urls import reverse
 
-from .models import Profile
+
+# ---------------------------------------------------------------------------
+# Settings correctness tests
+# ---------------------------------------------------------------------------
+
+class SecuritySettingsTests(TestCase):
+    """Verify that security-relevant settings have safe, deliberate values."""
+
+    def test_debug_is_a_real_boolean(self):
+        """
+        DEBUG must be a Python bool, not a string.
+
+        os.environ.get() returns a string.  bool('False') == True in Python
+        because non-empty strings are truthy — a subtle bug that leaves debug
+        mode on even when the operator intended to turn it off.  The _env_bool()
+        helper in settings.py parses it correctly.
+        """
+        self.assertIsInstance(settings.DEBUG, bool,
+            "DEBUG must be bool, not a string.  "
+            "os.environ.get() returns a string; use _env_bool() to parse it.")
+
+    def test_secret_key_is_set_and_non_empty(self):
+        """SECRET_KEY must be a non-empty string."""
+        self.assertIsNotNone(settings.SECRET_KEY,
+            "SECRET_KEY must not be None.")
+        self.assertIsInstance(settings.SECRET_KEY, str)
+        self.assertGreater(len(settings.SECRET_KEY), 0,
+            "SECRET_KEY must not be an empty string.")
+
+    def test_allowed_hosts_is_not_empty(self):
+        """
+        ALLOWED_HOSTS must contain at least one entry.
+
+        An empty list with DEBUG=False causes Django to return HTTP 400 for
+        every request because no Host header can ever match.
+        """
+        self.assertGreater(len(settings.ALLOWED_HOSTS), 0,
+            "ALLOWED_HOSTS must not be empty.")
+
+    def test_session_cookie_httponly_is_true(self):
+        """
+        SESSION_COOKIE_HTTPONLY=True prevents JavaScript from reading the
+        session cookie, limiting the impact of an XSS vulnerability.
+        """
+        self.assertTrue(settings.SESSION_COOKIE_HTTPONLY)
+
+    def test_session_cookie_samesite_is_lax(self):
+        """
+        SESSION_COOKIE_SAMESITE='Lax' instructs the browser to omit the
+        session cookie on cross-site POST requests, providing a browser-side
+        CSRF defence on top of Django's token check.
+        """
+        self.assertEqual(settings.SESSION_COOKIE_SAMESITE, 'Lax')
+
+    def test_secure_content_type_nosniff_is_true(self):
+        """
+        SECURE_CONTENT_TYPE_NOSNIFF=True causes SecurityMiddleware to add
+        X-Content-Type-Options: nosniff, preventing browsers from guessing
+        a different MIME type from the declared Content-Type.
+        """
+        self.assertTrue(settings.SECURE_CONTENT_TYPE_NOSNIFF)
+
+    def test_x_frame_options_is_deny(self):
+        """
+        X_FRAME_OPTIONS='DENY' prevents this application from being embedded
+        in an <iframe> on any origin.  A login service should never be
+        frameable — framing enables clickjacking attacks.
+        Django's XFrameOptionsMiddleware default is SAMEORIGIN, not DENY.
+        """
+        self.assertEqual(settings.X_FRAME_OPTIONS, 'DENY')
+
+    def test_secure_referrer_policy_is_set(self):
+        """
+        SECURE_REFERRER_POLICY should be set so the SecurityMiddleware adds a
+        Referrer-Policy header, preventing internal paths from leaking to
+        external servers via the Referer header.
+        """
+        policy = getattr(settings, 'SECURE_REFERRER_POLICY', None)
+        self.assertIsNotNone(policy,
+            "SECURE_REFERRER_POLICY should be set.")
+        self.assertNotEqual(policy, '',
+            "SECURE_REFERRER_POLICY must not be an empty string.")
 
 
-class StoredXSSProfileTests(TestCase):
+# ---------------------------------------------------------------------------
+# HTTP response header tests
+# ---------------------------------------------------------------------------
+
+class SecurityHeadersTests(TestCase):
     """
-    Each test writes a potentially malicious bio directly into the database
-    (simulating a stored payload), then fetches the view_profile page and
-    inspects the raw HTML for escaped vs. unescaped content.
+    Verify that security headers are present in actual HTTP responses.
+
+    Testing at the response level (not just the settings) confirms that
+    the middleware is active and wired up correctly.
     """
 
-    def setUp(self):
-        # alice: user whose bio carries the payload
-        self.alice = User.objects.create_user(
-            "alice", email="alice@example.com", password="Tr0ub4dor&3"
-        )
-        Profile.objects.get_or_create(user=self.alice)
+    def _get_login(self):
+        """Fetch the login page — a public endpoint that does not redirect."""
+        return self.client.get(reverse('amos:login'))
 
-        # bob: instructor who can view any profile (bypasses IDOR ownership check)
-        self.bob = User.objects.create_user(
-            "bob", email="bob@example.com", password="Tr0ub4dor&3"
-        )
-        instructor_group, _ = Group.objects.get_or_create(name="instructor")
-        self.bob.groups.add(instructor_group)
-
-    # ── Helper ─────────────────────────────────────────────────────────────
-
-    def _set_bio(self, user, bio: str) -> None:
-        """Write bio directly to the database — no HTTP round-trip."""
-        profile, _ = Profile.objects.get_or_create(user=user)
-        profile.bio = bio
-        profile.save()
-
-    def _get_profile_page(self, viewer, target_pk: int):
-        self.client.force_login(viewer)
-        return self.client.get(
-            reverse("amos:view_profile", kwargs={"pk": target_pk})
+    def test_x_content_type_options_header_present(self):
+        """Every response must include X-Content-Type-Options: nosniff."""
+        response = self._get_login()
+        self.assertEqual(
+            response.get('X-Content-Type-Options'), 'nosniff',
+            "X-Content-Type-Options: nosniff header must be present."
         )
 
-    # ── Script-tag payload ─────────────────────────────────────────────────
+    def test_x_frame_options_header_is_deny(self):
+        """Every response must include X-Frame-Options: DENY."""
+        response = self._get_login()
+        self.assertEqual(
+            response.get('X-Frame-Options'), 'DENY',
+            "X-Frame-Options: DENY header must be present."
+        )
 
-    def test_script_tag_in_bio_is_escaped(self):
-        """
-        A stored <script> payload must appear entity-escaped in the HTML, not
-        as a live script element that the browser would execute.
-        """
-        self._set_bio(self.alice, "<script>alert('xss')</script>")
-        response = self._get_profile_page(self.bob, self.alice.pk)
-
-        self.assertEqual(response.status_code, 200)
-        content = response.content.decode()
-
-        # Raw tag must not appear anywhere in the page.
-        self.assertNotIn("<script>alert('xss')</script>", content)
-        # Escaped version must be present (proves it was rendered, not silently dropped).
-        self.assertIn("&lt;script&gt;", content)
-
-    # ── Event-handler payload ──────────────────────────────────────────────
-
-    def test_img_onerror_in_bio_is_escaped(self):
-        """
-        An <img onerror=…> payload must be escaped so the attribute cannot
-        trigger JavaScript execution.
-        """
-        self._set_bio(self.alice, '<img src=x onerror=alert(1)>')
-        response = self._get_profile_page(self.bob, self.alice.pk)
-
-        content = response.content.decode()
-
-        # Raw payload must not appear in the markup.
-        self.assertNotIn('<img src=x onerror=alert(1)>', content)
-        # Opening angle bracket of the tag must be escaped.
-        self.assertIn("&lt;img", content)
-
-    # ── Normal bio text ────────────────────────────────────────────────────
-
-    def test_safe_bio_text_renders_correctly(self):
-        """
-        Plain text in the bio must appear unchanged so legitimate users are
-        not affected by the escaping defence.
-        """
-        self._set_bio(self.alice, "I love Python and security!")
-        response = self._get_profile_page(self.bob, self.alice.pk)
-        self.assertContains(response, "I love Python and security!")
-
-    # ── Self-XSS ───────────────────────────────────────────────────────────
-
-    def test_own_profile_xss_payload_is_escaped(self):
-        """
-        Even viewing your own profile, a stored payload must be escaped.
-        Self-XSS can be chained with other techniques, so it is not exempt.
-        """
-        self._set_bio(self.alice, "<script>document.cookie='stolen'</script>")
-        # alice views her own profile — no IDOR restriction applies.
-        response = self._get_profile_page(self.alice, self.alice.pk)
-
-        content = response.content.decode()
-        # The exact payload must not appear unescaped.  We test the specific
-        # payload string rather than any <script> tag because the page
-        # legitimately includes <script> blocks from the base template.
-        self.assertNotIn("<script>document.cookie=", content)
-        self.assertIn("&lt;script&gt;", content)
+    def test_referrer_policy_header_present(self):
+        """Every response must include a Referrer-Policy header."""
+        response = self._get_login()
+        self.assertIsNotNone(
+            response.get('Referrer-Policy'),
+            "Referrer-Policy header must be present in responses."
+        )

@@ -8,9 +8,34 @@ need to change how authentication itself works.
 Docs: https://docs.djangoproject.com/en/5.2/topics/auth/customizing/#extending-the-existing-user-model
 """
 
+import os
+import uuid
+
 from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
+
+from .validators import validate_avatar, validate_document
+
+
+# ---------------------------------------------------------------------------
+# Upload path helpers
+# ---------------------------------------------------------------------------
+# Using UUID-based filenames:
+#   - Prevents filename collisions between users.
+#   - Makes upload URLs unpredictable (no enumeration via sequential IDs).
+#   - Discards the original filename so no path-traversal characters survive.
+# The original extension is preserved only after it has been lower-cased; the
+# validator already confirmed it is in the allowed set before this is called.
+
+def _avatar_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return f"avatars/{uuid.uuid4().hex}{ext}"
+
+
+def _document_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return f"documents/{uuid.uuid4().hex}{ext}"
 
 
 class Profile(models.Model):
@@ -34,6 +59,18 @@ class Profile(models.Model):
         max_length=500,
         blank=True,
         help_text="A short bio shown on your profile page (500 characters max).",
+    )
+    avatar = models.FileField(
+        upload_to=_avatar_upload_to,
+        blank=True,
+        validators=[validate_avatar],
+        help_text="Profile picture. JPEG, PNG, GIF, or WebP only; max 2 MB.",
+    )
+    document = models.FileField(
+        upload_to=_document_upload_to,
+        blank=True,
+        validators=[validate_document],
+        help_text="A document to share. PDF or plain text only; max 5 MB.",
     )
 
     class Meta:

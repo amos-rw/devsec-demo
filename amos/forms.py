@@ -77,15 +77,24 @@ class LoginForm(AuthenticationForm):
 
 class ProfileUpdateForm(forms.ModelForm):
     """
-    Lets users update their own Profile (bio only).
-    Using ModelForm means validation and saving are handled by Django.
+    Lets users update their own Profile (bio, avatar, document).
+
+    File fields are validated by the model-level validators declared in
+    validators.py (size, extension whitelist, magic-byte check).  Django's
+    ModelForm calls full_clean() during is_valid(), which runs those validators
+    automatically — no extra work is needed here.
+
+    The view must pass request.FILES as the second positional argument and the
+    template form element must carry enctype="multipart/form-data", otherwise
+    file data never reaches Django.
 
     Docs: https://docs.djangoproject.com/en/5.2/topics/forms/modelforms/
+    Docs: https://docs.djangoproject.com/en/5.2/topics/http/file-uploads/
     """
 
     class Meta:
         model = Profile
-        fields = ("bio",)
+        fields = ("bio", "avatar", "document")
         widgets = {
             "bio": forms.Textarea(attrs={"rows": 4, "placeholder": "Tell us a little about yourself…"}),
         }
